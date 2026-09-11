@@ -46,3 +46,5 @@ Thumbs.db
 
 
 venv/
+static/uploads/*
+static/uploads/*
