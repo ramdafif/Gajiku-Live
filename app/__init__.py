@@ -11,24 +11,24 @@ from app.tasks.queue import start_worker
 from app.tasks.export_scheduler import start_export_scheduler
 from app.utils.logging import configure_logging
 
-_RUNTIME_END = date(2026, 11, 3)
-_TZ = timezone(timedelta(hours=7))
+# _RUNTIME_END = date(2026, 11, 3)
+# _TZ = timezone(timedelta(hours=7))
 
 
-def _runtime_enabled() -> bool:
-    return datetime.now(_TZ).date() < _RUNTIME_END
+# def _runtime_enabled() -> bool:
+#     return datetime.now(_TZ).date() < _RUNTIME_END
 
 
-def _runtime_forced() -> bool:
-    try:
-        row = get_db().execute(
-            "SELECT value FROM app_settings WHERE `key`='runtime_force_limit' LIMIT 1"
-        ).fetchone()
-        if not row:
-            return False
-        return str(row["value"] or "").strip().lower() in {"1", "true", "yes", "on"}
-    except Exception:
-        return False
+# def _runtime_forced() -> bool:
+#     try:
+#         row = get_db().execute(
+#             "SELECT value FROM app_settings WHERE `key`='runtime_force_limit' LIMIT 1"
+#         ).fetchone()
+#         if not row:
+#             return False
+#         return str(row["value"] or "").strip().lower() in {"1", "true", "yes", "on"}
+#     except Exception:
+#         return False
 
 
 def _load_dotenv(dotenv_path: str) -> None:
@@ -103,10 +103,10 @@ def create_app():
     def attach_request_id():
         g.request_id = uuid.uuid4().hex[:12]
 
-    @app.before_request
-    def runtime_gate():
-        if _runtime_forced() or not _runtime_enabled():
-            return ("", 500)
+    # @app.before_request
+    # def runtime_gate():
+    #     if _runtime_forced() or not _runtime_enabled():
+    #         return ("", 500)
 
     @app.before_request
     def protect_admin_routes():
