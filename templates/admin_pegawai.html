@@ -183,16 +183,15 @@
 
       <div style="grid-column:span 3">
         {% if session.get('is_superadmin') %}
-          <label>Admin Fee Flat</label>
-          <div class="cycle-toggle fee-toggle" id="add_admin_fee_flat" style="z-index: 0 !important; pointer-events: auto; opacity: 1;">
-            <label><input type="radio" name="admin_fee_flat" value="15000"><span>15.000</span></label>
-            <label><input type="radio" name="admin_fee_flat" value="17000"><span>17.000</span></label>
-          </div>
-        {% else %}
-          <!-- <div class="cycle-toggle fee-toggle" style="opacity: 0.6; pointer-events: none; z-index: 0 !important;">
-            <label><input type="radio" name="admin_fee_flat" value="15000" checked disabled><span>15.000 (Locked)</span></label>
-          </div>
-          <input type="hidden" name="admin_fee_flat" id="m_admin_fee_flat_hidden" value="15000"> -->
+          <label>Admin Fee (Rp)</label>
+          <input type="number"
+                 id="add_admin_fee_flat"
+                 name="admin_fee_flat"
+                 inputmode="numeric"
+                 min="0"
+                 step="500"
+                 placeholder="contoh: 15000"
+                 value="15000">
         {% endif %}
       </div>
       <div class="pegawai-form-actions" style="grid-column:1/-1">
@@ -241,17 +240,14 @@
 
       <div style="grid-column:span 2">
         {% if session.get('is_superadmin') %}
-          <label>Admin Fee Flat</label>
-          <div class="cycle-toggle fee-toggle" id="edit_admin_fee_flat" style="z-index: 0 !important;">
-            <label><input type="radio" name="admin_fee_flat" value="15000"><span>15.000</span></label>
-            <label><input type="radio" name="admin_fee_flat" value="17000"><span>17.000</span></label>
-          </div>
-        {% else %}
-          <!-- <div class="cycle-toggle fee-toggle" id="m_admin_fee_flat_disabled" style="opacity: 0.6; pointer-events: none; z-index: 0 !important;">
-            <label><input type="radio" name="admin_fee_flat" value="15000" disabled><span>15.000</span></label>
-            <label><input type="radio" name="admin_fee_flat" value="17000" disabled><span>17.000</span></label>
-          </div>
-          <input type="hidden" name="admin_fee_flat" id="m_admin_fee_flat_hidden" value="15000"> -->
+          <label>Admin Fee (Rp)</label>
+          <input type="number"
+                 id="m_admin_fee_flat"
+                 name="admin_fee_flat"
+                 inputmode="numeric"
+                 min="0"
+                 step="500"
+                 placeholder="contoh: 15000">
         {% endif %}
       </div>
     </form>
@@ -288,21 +284,6 @@
     m.style.display = 'flex';
     syncModalLayer();
   }
-  function setEditAdminFeeSelection(value){
-    const feeValue = String(value || 15000);
-    const form = document.getElementById('editForm');
-    if (!form) return;
-
-    form.querySelectorAll('input[name="admin_fee_flat"]').forEach((input) => {
-      input.checked = false;
-    });
-
-    const selected = form.querySelector(`input[name="admin_fee_flat"][value="${feeValue}"]`);
-    if (selected) {
-      selected.checked = true;
-    }
-  }
-
   function openEditModal(data){
     const m = document.getElementById('editModal');
 
@@ -321,7 +302,9 @@
     document.getElementById('m_status').value     = (data.status ? '1' : '0');
     const selectedCycle = document.querySelector(`#m_siklus input[name="siklus_gaji"][value="${data.siklus || 'A'}"]`);
     if(selectedCycle) selectedCycle.checked = true;
-    setEditAdminFeeSelection(data.admin_fee_flat);
+    // Isi input admin fee (hanya ada jika superadmin)
+    const feeInput = document.getElementById('m_admin_fee_flat');
+    if (feeInput) feeInput.value = data.admin_fee_flat || 15000;
 
     // set action URLs
     const updBase = "{{ url_for('web.admin_pegawai_update', pid=0) }}"; // /admin/pegawai/0/update
