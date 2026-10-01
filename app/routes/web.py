@@ -150,7 +150,7 @@ def normalize_siklus(value: str, default: str = "A") -> str:
 
 def normalize_admin_fee_flat(value, default: int = 15000) -> int:
     fee = parse_int(value, default)
-    return fee if fee in ADMIN_FEE_FLAT_OPTIONS else default
+    return fee if fee >= 0 else default
 
 def compute_limits(gaji: int, at_date: date, user_id: int):
     """
