@@ -97,14 +97,14 @@
     <p class="muted" style="margin:0">
       <b>Jenis Produk:</b><br>
       {% if 'reg' in enabled_products %}
-        <span class="badge badge-reg">REG</span> Reguler - admin fee flat {{ ADMIN_FEE | rupiah }}{% if ppn_enabled %} + PPN 11%{% endif %}, saldo mengikuti limit harian (plafon 50% gaji / 30).<br>
+        <span class="badge badge-reg">REG</span> Reguler - admin fee flat {{ ADMIN_FEE | rupiah }}{% if ppn_enabled %} + PPN 11%{% endif %}, saldo mengikuti limit harian ({% if limits.cutoff_mingguan %}plafon mingguan 25% dari plafon bulanan / 7 hari{% else %}plafon 50% gaji / 30 hari{% endif %}).<br>
       {% endif %}
       {% if 'urg' in enabled_products %}
         <span class="badge badge-urg">URG</span> Urgent - admin fee = ceil(nominal / limit harian) x {{ ADMIN_FEE | rupiah }}{% if ppn_enabled %}, lalu ditambah PPN 11%{% endif %}. <br>
       {% endif %}
       {% if 'urg' in enabled_products %}
-        <span class="urg-footnote">Limit URG = sisa plafon (tanpa batas sisa hari).<br>
-        <b>Catatan URG:</b> fee = ceil(nominal / limit harian) x {{ ADMIN_FEE | rupiah }}{% if ppn_enabled %} + PPN 11%{% endif %} - Tipe Siklus {{ limits.siklus }}</span>
+        <span class="urg-footnote">Limit URG = sisa plafon {% if limits.cutoff_mingguan %}mingguan{% endif %} (tanpa batas sisa hari).<br>
+        <b>Catatan URG:</b> fee = ceil(nominal / limit harian) x {{ ADMIN_FEE | rupiah }}{% if ppn_enabled %} + PPN 11%{% endif %} - {% if limits.cutoff_mingguan %}Cutoff {{ ['Senin','Selasa','Rabu','Kamis','Jumat','Sabtu','Minggu'][limits.cutoff_hari|int] }}{% else %}Tipe Siklus {{ limits.siklus }}{% endif %}</span>
       {% endif %}
     </p>
   </form>

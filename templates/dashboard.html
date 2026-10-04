@@ -34,7 +34,7 @@
   </div></section>
 
 <section class="kpi-grid">
-  <div class="kpi-card"><small>Plafon (Rp)</small><b>{{ (limits.plafon | rupiah) | replace('Rp. ', '') | replace('Rp.', '') }}</b></div>
+  <div class="kpi-card"><small>{{ 'Plafon Mingguan' if limits.cutoff_mingguan else 'Plafon Bulanan' }} (Rp)</small><b>{{ (limits.plafon | rupiah) | replace('Rp. ', '') | replace('Rp.', '') }}</b></div>
   <div class="kpi-card"><small>Limit Harian (Rp)</small><b>{{ (limits.limit_harian | rupiah) | replace('Rp. ', '') | replace('Rp.', '') }}</b></div>
   <div class="kpi-card"><small>Hari ke-</small><b>{{ limits.hari_ke }}</b></div>
 
@@ -74,7 +74,7 @@
       'C': 'Skema gaji tanggal 20',
       'D': 'Skema gaji tanggal 25'
     } %}
-    <span class="employee-cycle-badge">{{ siklus_label.get(limits.siklus, 'Skema gaji -') }}</span>
+    <span class="employee-cycle-badge">{% if limits.cutoff_mingguan %}Cutoff {{ ['Senin','Selasa','Rabu','Kamis','Jumat','Sabtu','Minggu'][limits.cutoff_hari|int] }}{% else %}{{ siklus_label.get(limits.siklus, 'Skema gaji -') }}{% endif %}</span>
   </div>
 
   <div class="employee-info-list">

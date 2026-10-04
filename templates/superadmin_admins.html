@@ -71,6 +71,7 @@
           <th style="width:7%">Status</th>
           <th style="width:9%">Hak Approval</th>
           <th style="width:10%">Cutoff Mingguan</th>
+          <th style="width:10%">Produk</th>
           <th style="width:6%">Aksi</th>
         </tr>
       </thead>
@@ -111,6 +112,8 @@
                 {% endif %}
                 </td>
 
+                <td><small>REG {{ 'ON' if r['produk_reg_aktif']|int else 'OFF' }} · URG {{ 'ON' if r['produk_urg_aktif']|int else 'OFF' }}</small></td>
+
                 <td>
                 <button class="btn btn-outline btn-sm"
                         onclick='openEditModal({
@@ -124,6 +127,8 @@
                             hak_approval: {{ (r["hak_approval"] or 0)|tojson }}
                             ,cutoff_mingguan_aktif: {{ (r["cutoff_mingguan_aktif"] or 0)|tojson }}
                             ,cutoff_hari: {{ (r["cutoff_hari"] if r["cutoff_hari"] is not none else 2)|tojson }}
+                            ,produk_reg_aktif: {{ (r["produk_reg_aktif"] or 0)|tojson }}
+                            ,produk_urg_aktif: {{ (r["produk_urg_aktif"] or 0)|tojson }}
                         })'>Edit</button>
                 </td>
             </tr>
@@ -157,6 +162,11 @@
         <div style="grid-column:span 3;display:flex;align-items:center;gap:8px;margin-top:6px;">
           <input type="checkbox" id="add_hak_approval" name="hak_approval" value="1" style="width:auto;">
           <label for="add_hak_approval" style="margin:0;">Beri hak approve/tolak tarik gaji</label>
+        </div>
+        <div style="grid-column:span 3;display:flex;align-items:center;gap:12px;margin-top:6px;">
+          <span>Produk yang diizinkan:</span>
+          <label><input type="checkbox" id="add_produk_reg_aktif" name="produk_reg_aktif" value="1" checked style="width:auto;"> REG</label>
+          <label><input type="checkbox" id="add_produk_urg_aktif" name="produk_urg_aktif" value="1" checked style="width:auto;"> URG</label>
         </div>
         <div style="grid-column:span 3;display:flex;align-items:center;gap:8px;margin-top:6px;">
           <input type="checkbox" id="add_cutoff_mingguan_aktif" name="cutoff_mingguan_aktif" value="1" style="width:auto;">
@@ -207,6 +217,11 @@
         <select id="m_cutoff_hari" name="cutoff_hari" disabled>
           {% for day in ['Senin','Selasa','Rabu','Kamis','Jumat','Sabtu','Minggu'] %}<option value="{{ loop.index0 }}">{{ day }}</option>{% endfor %}
         </select>
+      </div>
+      <div style="grid-column:span 3;display:flex;align-items:center;gap:12px;margin-top:6px;">
+        <span>Produk yang diizinkan:</span>
+        <label><input type="checkbox" id="m_produk_reg_aktif" name="produk_reg_aktif" value="1" style="width:auto;"> REG</label>
+        <label><input type="checkbox" id="m_produk_urg_aktif" name="produk_urg_aktif" value="1" style="width:auto;"> URG</label>
       </div>
 
     </form>
@@ -261,6 +276,8 @@ function openEditModal(data){
     document.getElementById('m_cutoff_mingguan_aktif').checked = (data.cutoff_mingguan_aktif == 1 || data.cutoff_mingguan_aktif === '1');
     document.getElementById('m_cutoff_hari').value = String(data.cutoff_hari ?? 2);
     document.getElementById('m_cutoff_hari').disabled = !document.getElementById('m_cutoff_mingguan_aktif').checked;
+    document.getElementById('m_produk_reg_aktif').checked = (data.produk_reg_aktif == 1 || data.produk_reg_aktif === '1');
+    document.getElementById('m_produk_urg_aktif').checked = (data.produk_urg_aktif == 1 || data.produk_urg_aktif === '1');
 
     // Set action URL dinamis ke rute backend superadmin_edit_admin & delete
     const updBase = "{{ url_for('web.superadmin_edit_admin', admin_id=0) }}";

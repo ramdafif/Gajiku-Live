@@ -193,9 +193,10 @@ def compute_limits(gaji: int, at_date: date, user_id: int):
     weekly = get_weekly_cutoff_config(row["perusahaan_induk"] if row else "")
 
     # Plafon & limit harian
-    plafon = math.floor(0.5 * (gaji or 0))
-    # Cutoff mingguan memakai plafon 7 hari. Pegawai lain tetap memakai
-    # skema bulanan lama dengan pembagi 30 hari.
+    plafon_bulanan = math.floor(0.5 * (gaji or 0))
+    # Cutoff mingguan memakai 25% dari plafon bulanan sebagai plafon periode.
+    # Pegawai non-cutoff tetap memakai plafon bulanan dan pembagi 30 hari.
+    plafon = math.floor(plafon_bulanan * 0.25) if weekly else plafon_bulanan
     limit_period_days = 7 if weekly else 30
     limit_harian = math.floor(plafon / limit_period_days) if gaji else 0
 
@@ -236,6 +237,7 @@ def compute_limits(gaji: int, at_date: date, user_id: int):
 
     return {
         "plafon": plafon,
+        "plafon_bulanan": plafon_bulanan,
         "limit_harian": limit_harian,
         "limit_period_days": limit_period_days,
         "hari_ke": hari_ke,
@@ -652,6 +654,27 @@ def get_enabled_products():
         if p in ("reg", "urg") and p not in enabled:
             enabled.append(p)
     return enabled if enabled else ["reg", "urg"]
+
+
+def get_products_for_company(company):
+    """Global product setting intersected with the active company admin policy."""
+    enabled = set(get_enabled_products())
+    company = (company or "").strip()
+    if not company:
+        return sorted(enabled)
+    row = get_db().execute("""
+        SELECT COALESCE(produk_reg_aktif, 1) AS reg_on,
+               COALESCE(produk_urg_aktif, 1) AS urg_on
+        FROM admins
+        WHERE LOWER(TRIM(company)) = LOWER(TRIM(?))
+        ORDER BY id DESC LIMIT 1
+    """, (company,)).fetchone()
+    if row:
+        if not int(row["reg_on"] or 0):
+            enabled.discard("reg")
+        if not int(row["urg_on"] or 0):
+            enabled.discard("urg")
+    return sorted(enabled)
 
 def set_enabled_products(products):
     value = ",".join(products)
@@ -1106,14 +1129,14 @@ def dashboard():
         email = (user["email"] or "").strip().lower()
         if email:
             company_row = db.execute(
-                "SELECT COALESCE(perusahaan, '') AS perusahaan FROM pegawai WHERE LOWER(email)=?",
+                "SELECT COALESCE(perusahaan_induk, '') AS perusahaan_induk FROM pegawai WHERE LOWER(email)=?",
                 (email,),
             ).fetchone()
-            account_company = company_row["perusahaan"] if company_row else ""
+            account_company = company_row["perusahaan_induk"] if company_row else ""
     except Exception:
         account_company = ""
 
-    enabled_products = get_enabled_products()
+    enabled_products = get_products_for_company(account_company)
     avatar_url = None
     try:
         email = (session.get("formal_email") or user["email"] or "").strip().lower()
@@ -1211,7 +1234,13 @@ def tarik_gaji():
     user    = get_user_by_id(session["user_id"])
     at_date = current_sim_date() # Tanggal simulasi bawaan sistem
     limits  = compute_limits(int(user["gaji"] or 0), at_date, user["id"])
-    enabled_products = get_enabled_products()
+    pegawai_company = ""
+    try:
+        company_row = db.execute("SELECT perusahaan_induk FROM pegawai WHERE LOWER(email)=LOWER(?)", (user["email"],)).fetchone()
+        pegawai_company = company_row["perusahaan_induk"] if company_row else ""
+    except Exception:
+        pass
+    enabled_products = get_products_for_company(pegawai_company)
     selected_product = enabled_products[0] if enabled_products else "reg"
     pegawai_rekening = None
     try:
@@ -3773,7 +3802,9 @@ def superadmin_admins():
     # Base query admin
     query = """SELECT id, name, email, company, no_telp, status_aktif, hak_approval,
                       COALESCE(cutoff_mingguan_aktif, 0) AS cutoff_mingguan_aktif,
-                      COALESCE(cutoff_hari, 2) AS cutoff_hari
+                      COALESCE(cutoff_hari, 2) AS cutoff_hari,
+                      COALESCE(produk_reg_aktif, 1) AS produk_reg_aktif,
+                      COALESCE(produk_urg_aktif, 1) AS produk_urg_aktif
                FROM admins WHERE 1=1"""
     params = []
     
@@ -3827,6 +3858,8 @@ def superadmin_edit_admin(admin_id):
     # Hak approve/tolak tarik gaji (LAYER 1) - checkbox, tidak terkirim sama sekali kalau tidak dicentang
     hak_approval = 1 if request.form.get("hak_approval") in ("1", "on", "true") else 0
     cutoff_aktif = 1 if request.form.get("cutoff_mingguan_aktif") in ("1", "on", "true") else 0
+    produk_reg_aktif = 1 if request.form.get("produk_reg_aktif") in ("1", "on", "true") else 0
+    produk_urg_aktif = 1 if request.form.get("produk_urg_aktif") in ("1", "on", "true") else 0
     try:
         cutoff_hari = int(request.form.get("cutoff_hari", 2))
     except (TypeError, ValueError):
@@ -3857,8 +3890,8 @@ def superadmin_edit_admin(admin_id):
     try:
         # 💡 Tambahkan status_aktif=? ke dalam query UPDATE
         db.execute(
-            "UPDATE admins SET name=?, email=?, company=?, no_telp=?, status_aktif=?, hak_approval=?, cutoff_mingguan_aktif=?, cutoff_hari=? WHERE id=?",
-            (name, email, company, no_telp, status_aktif, hak_approval, cutoff_aktif, cutoff_hari, admin_id)
+            "UPDATE admins SET name=?, email=?, company=?, no_telp=?, status_aktif=?, hak_approval=?, cutoff_mingguan_aktif=?, cutoff_hari=?, produk_reg_aktif=?, produk_urg_aktif=? WHERE id=?",
+            (name, email, company, no_telp, status_aktif, hak_approval, cutoff_aktif, cutoff_hari, produk_reg_aktif, produk_urg_aktif, admin_id)
         )
         # Satu company memiliki satu konfigurasi cutoff bersama.
         db.execute("""
@@ -3866,6 +3899,10 @@ def superadmin_edit_admin(admin_id):
             SET cutoff_mingguan_aktif=?, cutoff_hari=?
             WHERE LOWER(TRIM(company)) = LOWER(TRIM(?))
         """, (cutoff_aktif, cutoff_hari, company))
+        db.execute("""
+            UPDATE admins SET produk_reg_aktif=?, produk_urg_aktif=?
+            WHERE LOWER(TRIM(company)) = LOWER(TRIM(?))
+        """, (produk_reg_aktif, produk_urg_aktif, company))
         db.commit()
         flash("Data admin berhasil diperbarui!", "success")
         if windu_warning:
@@ -3910,6 +3947,8 @@ def superadmin_admins_add():
     # kebijakan "semua admin default tidak punya hak approval sampai dinyalakan manual Superadmin".
     hak_approval = 1 if request.form.get("hak_approval") in ("1", "on", "true") else 0
     cutoff_aktif = 1 if request.form.get("cutoff_mingguan_aktif") in ("1", "on", "true") else 0
+    produk_reg_aktif = 1 if request.form.get("produk_reg_aktif") in ("1", "on", "true") else 0
+    produk_urg_aktif = 1 if request.form.get("produk_urg_aktif") in ("1", "on", "true") else 0
     try:
         cutoff_hari = int(request.form.get("cutoff_hari", 2))
     except (TypeError, ValueError):
@@ -3929,6 +3968,16 @@ def superadmin_admins_add():
     if existing_cutoff:
         cutoff_aktif = int(existing_cutoff["cutoff_mingguan_aktif"] or 0)
         cutoff_hari = int(existing_cutoff["cutoff_hari"] if existing_cutoff["cutoff_hari"] is not None else 2)
+    existing_products = db.execute("""
+        SELECT COALESCE(produk_reg_aktif, 1) AS reg_on,
+               COALESCE(produk_urg_aktif, 1) AS urg_on
+        FROM admins
+        WHERE LOWER(TRIM(company)) = LOWER(TRIM(?))
+        ORDER BY id ASC LIMIT 1
+    """, (company,)).fetchone()
+    if existing_products:
+        produk_reg_aktif = int(existing_products["reg_on"] or 0)
+        produk_urg_aktif = int(existing_products["urg_on"] or 0)
 
     if not name or not email or not password:
         flash("Semua field wajib diisi!", "warning")
@@ -3941,10 +3990,10 @@ def superadmin_admins_add():
         # Tambahkan kolom role dan status_aktif ke dalam query INSERT (Sudah fix untuk MariaDB)
         db.execute(
             """
-            INSERT INTO admins (name, email, password_hash, company, no_telp, role, status_aktif, hak_approval, cutoff_mingguan_aktif, cutoff_hari, created_at) 
-            VALUES (?, ?, ?, ?, ?, 'admin', 1, ?, ?, ?, ?)
+            INSERT INTO admins (name, email, password_hash, company, no_telp, role, status_aktif, hak_approval, cutoff_mingguan_aktif, cutoff_hari, produk_reg_aktif, produk_urg_aktif, created_at) 
+            VALUES (?, ?, ?, ?, ?, 'admin', 1, ?, ?, ?, ?, ?, ?)
             """,
-            (name, email, pw_hash, company, no_telp, hak_approval, cutoff_aktif, cutoff_hari, datetime.now().isoformat(timespec="seconds"))
+            (name, email, pw_hash, company, no_telp, hak_approval, cutoff_aktif, cutoff_hari, produk_reg_aktif, produk_urg_aktif, datetime.now().isoformat(timespec="seconds"))
         )
         db.commit()
         flash(f"Admin baru untuk Perusahaan '{company}' berhasil dibuat!", "success")

@@ -446,6 +446,32 @@ def ensure_cutoff_mingguan_columns(db):
         print(f"[DB] ensure kolom cutoff mingguan dilewati: {e}")
 
 
+def ensure_admin_product_columns(db):
+    """Izin produk REG/URG per company admin. Default ON menjaga kompatibilitas."""
+    db_type = current_app.config.get("DB_TYPE", "mysql")
+    columns = (
+        ("produk_reg_aktif", "INTEGER NOT NULL DEFAULT 1", "TINYINT(1) NOT NULL DEFAULT 1"),
+        ("produk_urg_aktif", "INTEGER NOT NULL DEFAULT 1", "TINYINT(1) NOT NULL DEFAULT 1"),
+    )
+    try:
+        if db_type == "sqlite":
+            existing = {r[1] for r in db.execute("PRAGMA table_info('admins')").fetchall()}
+            for name, sqlite_type, _ in columns:
+                if name not in existing:
+                    db.execute(f"ALTER TABLE admins ADD COLUMN {name} {sqlite_type}")
+        else:
+            for name, _, mysql_type in columns:
+                if not db.execute(f"SHOW COLUMNS FROM admins LIKE '{name}'").fetchone():
+                    db.execute(f"ALTER TABLE admins ADD COLUMN {name} {mysql_type}")
+        db.commit()
+    except Exception as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        print(f"[DB] ensure kolom izin produk admin dilewati: {e}")
+
+
 def ensure_windu_projects_table(db):
     """Tabel daftar project/anak-perusahaan resmi PT Windu Karya. Dipakai sebagai sumber dropdown
     'Perusahaan' saat Admin PT Windu Karya (atau Superadmin) menambah/mengubah pegawai, supaya nama
@@ -553,6 +579,7 @@ def ensure_db():
         ensure_windu_projects_table(get_db())
         ensure_hak_approval_column(get_db())
         ensure_cutoff_mingguan_columns(get_db())
+        ensure_admin_product_columns(get_db())
     else:
         # MySQL mode: skip SQLite init_db() because schema is managed by MySQL migration
         db = get_db()
@@ -561,6 +588,7 @@ def ensure_db():
         ensure_windu_projects_table(db)
         ensure_hak_approval_column(db)
         ensure_cutoff_mingguan_columns(db)
+        ensure_admin_product_columns(db)
 
 
 def _migrate_users_email_unique(db):
