@@ -385,6 +385,151 @@ def init_db():
         pass
 
 
+# Kolom audit untuk 2-layer approval (Admin -> Superadmin) pada tabel transactions.
+#   admin_approved_at/by : layer 1, di-approve Admin PT (status transaksi TETAP 'on-proses')
+#   final_approved_at/by : layer 2, di-approve Superadmin (status jadi 'sukses' = sudah ditransfer)
+APPROVAL_COLUMNS = (
+    ("admin_approved_at", "DATETIME NULL", "TEXT"),
+    ("admin_approved_by", "VARCHAR(255) NULL", "TEXT"),
+    ("final_approved_at", "DATETIME NULL", "TEXT"),
+    ("final_approved_by", "VARCHAR(255) NULL", "TEXT"),
+)
+
+
+def ensure_hak_approval_column(db):
+    """Kolom admins.hak_approval: siapa saja admin yang boleh approve/tolak tarik gaji (LAYER 1).
+    Default 0 (OFF) untuk semua - sengaja begitu supaya begitu fitur ini di-deploy, perilaku sistem
+    TIDAK berubah untuk PT yang belum ada admin di-ON-kan (tetap bypass langsung ke Superadmin,
+    persis seperti sebelum fitur ini ada). Kecuali PT Windu Karya, yang memang selalu wajib admin
+    approve dulu terlepas dari kolom ini (lihat is_windu_company & superadmin_final_gate)."""
+    db_type = current_app.config.get("DB_TYPE", "mysql")
+    try:
+        if db_type == "sqlite":
+            cols = [r[1] for r in db.execute("PRAGMA table_info('admins')").fetchall()]
+            if "hak_approval" not in cols:
+                db.execute("ALTER TABLE admins ADD COLUMN hak_approval INTEGER NOT NULL DEFAULT 0")
+        else:
+            if not db.execute("SHOW COLUMNS FROM admins LIKE 'hak_approval'").fetchone():
+                db.execute("ALTER TABLE admins ADD COLUMN hak_approval TINYINT(1) NOT NULL DEFAULT 0")
+        db.commit()
+    except Exception as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        print(f"[DB] ensure kolom hak_approval (admins) dilewati: {e}")
+
+
+def ensure_cutoff_mingguan_columns(db):
+    """Kolom konfigurasi cutoff mingguan pada admins (berlaku per company)."""
+    db_type = current_app.config.get("DB_TYPE", "mysql")
+    columns = (
+        ("cutoff_mingguan_aktif", "INTEGER NOT NULL DEFAULT 0", "TINYINT(1) NOT NULL DEFAULT 0"),
+        ("cutoff_hari", "INTEGER NOT NULL DEFAULT 2", "TINYINT NOT NULL DEFAULT 2"),
+    )
+    try:
+        if db_type == "sqlite":
+            existing = {r[1] for r in db.execute("PRAGMA table_info('admins')").fetchall()}
+            for name, sqlite_type, _ in columns:
+                if name not in existing:
+                    db.execute(f"ALTER TABLE admins ADD COLUMN {name} {sqlite_type}")
+        else:
+            for name, _, mysql_type in columns:
+                if not db.execute(f"SHOW COLUMNS FROM admins LIKE '{name}'").fetchone():
+                    db.execute(f"ALTER TABLE admins ADD COLUMN {name} {mysql_type}")
+        db.commit()
+    except Exception as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        print(f"[DB] ensure kolom cutoff mingguan dilewati: {e}")
+
+
+def ensure_windu_projects_table(db):
+    """Tabel daftar project/anak-perusahaan resmi PT Windu Karya. Dipakai sebagai sumber dropdown
+    'Perusahaan' saat Admin PT Windu Karya (atau Superadmin) menambah/mengubah pegawai, supaya nama
+    project tidak diketik manual (rawan typo/duplikat). Nama project baru WAJIB didaftarkan lebih
+    dulu lewat menu 'Kelola Project Windu Karya' oleh Superadmin atau Admin PT Windu Karya sendiri."""
+    db_type = current_app.config.get("DB_TYPE", "mysql")
+    try:
+        if db_type == "sqlite":
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS windu_projects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    nama_project TEXT NOT NULL,
+                    created_by VARCHAR(255) DEFAULT '',
+                    created_at TEXT NOT NULL
+                )
+            """)
+        else:
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS windu_projects (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    nama_project VARCHAR(255) NOT NULL,
+                    created_by VARCHAR(255) DEFAULT '',
+                    created_at DATETIME NOT NULL
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+            """)
+        db.commit()
+    except Exception as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        print(f"[DB] ensure tabel windu_projects dilewati: {e}")
+
+
+def ensure_approval_columns(db):
+    """Tambah kolom 2-layer approval bila belum ada (idempotent, aman dipanggil berulang)."""
+    db_type = current_app.config.get("DB_TYPE", "mysql")
+    missing = []
+    for name, mysql_type, sqlite_type in APPROVAL_COLUMNS:
+        try:
+            if db_type == "sqlite":
+                cols = [r[1] for r in db.execute("PRAGMA table_info('transactions')").fetchall()]
+                if name in cols:
+                    continue
+                db.execute(f"ALTER TABLE transactions ADD COLUMN {name} {sqlite_type}")
+            else:
+                if db.execute(f"SHOW COLUMNS FROM transactions LIKE '{name}'").fetchone():
+                    continue
+                db.execute(f"ALTER TABLE transactions ADD COLUMN {name} {mysql_type}")
+            db.commit()
+            print(f"[DB] kolom {name} (transactions) ditambahkan.")
+        except Exception as e:
+            # Bisa terjadi bila 2 worker start bersamaan (duplicate column) atau user DB tak punya hak ALTER.
+            # Kalau tak punya hak ALTER, jalankan manual: migrasi_2layer_approval.sql
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            print(f"[DB] ensure kolom {name} dilewati: {e}")
+            missing.append(name)
+
+    # Jangan biarkan aplikasi start lalu gagal jauh di dalam route dengan
+    # ProgrammingError 1054. Ini juga membuat penyebab deploy yang lupa
+    # menjalankan migrasi terlihat langsung di log startup.
+    try:
+        if db_type == "sqlite":
+            existing = {r[1] for r in db.execute("PRAGMA table_info('transactions')").fetchall()}
+        else:
+            existing = {
+                row["Field"] if isinstance(row, dict) else row[0]
+                for row in db.execute("SHOW COLUMNS FROM transactions").fetchall()
+            }
+        missing = [name for name, _, _ in APPROVAL_COLUMNS if name not in existing]
+    except Exception as e:
+        raise RuntimeError(f"Tidak bisa memverifikasi schema tabel transactions: {e}") from e
+
+    if missing:
+        raise RuntimeError(
+            "Kolom approval belum tersedia di tabel transactions: "
+            + ", ".join(missing)
+            + ". Jalankan migrasi_2layer_approval.sql atau berikan user MySQL hak ALTER TABLE."
+        )
+
+
 def ensure_db():
     db_type = current_app.config.get("DB_TYPE", "mysql")
 
@@ -404,10 +549,18 @@ def ensure_db():
             os.makedirs(db_dir, exist_ok=True)
 
         init_db()
+        ensure_approval_columns(get_db())
+        ensure_windu_projects_table(get_db())
+        ensure_hak_approval_column(get_db())
+        ensure_cutoff_mingguan_columns(get_db())
     else:
         # MySQL mode: skip SQLite init_db() because schema is managed by MySQL migration
         db = get_db()
         db.execute("SELECT 1")
+        ensure_approval_columns(db)
+        ensure_windu_projects_table(db)
+        ensure_hak_approval_column(db)
+        ensure_cutoff_mingguan_columns(db)
 
 
 def _migrate_users_email_unique(db):

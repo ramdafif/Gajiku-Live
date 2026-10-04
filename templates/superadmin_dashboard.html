@@ -162,9 +162,26 @@
   .card.glass{ margin-bottom:16px; }
 </style>
 
+{# ===== 2 LAYER APPROVAL: Admin PT (layer 1) -> Superadmin (layer 2 / final & transfer) ===== #}
+{% macro tahap(t) %}
+  {% if t['stage'] == 'menunggu_superadmin' %}
+    <span class="badge">Approved Admin</span>
+    {% if t['admin_approved_by'] %}<br><small class="muted">oleh {{ t['admin_approved_by'] }}</small>{% endif %}
+  {% elif t['can_final'] %}
+    <span class="badge badge-reg">Tanpa Admin PT</span>
+  {% else %}
+    <span class="badge badge-urg">Menunggu Admin</span>
+  {% endif %}
+  {% if t['is_windu'] %}<br><small class="muted">PT Windu</small>{% endif %}
+{% endmacro %}
+
 <!-- PERMINTAAN REG ON-PROSES -->
 <section class="card glass">
   <h3>Permintaan Reg On-Proses</h3>
+  <p class="muted" style="margin:0 0 10px;font-size:13px;">
+    Approval 2 layer: Admin PT approve dulu, baru Superadmin approve final &amp; transfer.
+    {% if pending_admin_wait %}<span class="badge badge-urg">{{ pending_admin_wait }} masih menunggu Admin PT</span>{% endif %}
+  </p>
   {% if not pending_reg %}
     <p class="muted">Tidak ada pengajuan Reg yang menunggu.</p>
   {% else %}
@@ -180,6 +197,7 @@
           <th>Admin</th>
           <th>Rekening Tujuan</th>
           <th>No Telp</th>
+          <th>Tahap Approval</th>
           <th style="width:220px;">Aksi</th>
         </tr>
       </thead>
@@ -194,12 +212,17 @@
           <td>{{ "{:,}".format(t['admin_fee']).replace(",", ".") }}</td>
           <td>{{ t['no_rekening'] or '-' }}</td>
           <td>{{ t['no_telp'] or '-' }}</td>
+          <td>{{ tahap(t) }}</td>
           <td>
             <div style="display:flex;gap:8px;flex-wrap:wrap;">
-              <form method="post" action="{{ url_for('web.superadmin_tx_approve', txid=t['id']) }}">
+              {% if t['can_final'] %}
+              <form method="post" action="{{ url_for('web.superadmin_tx_approve', txid=t['id']) }}" onsubmit="return confirm('PT ini tidak punya Admin dengan hak approval - klik Approve akan LANGSUNG menandai transaksi ini sukses (transfer dilakukan sekarang oleh Anda).');">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button class="btn btn-sm btn-alert">Approve</button>
               </form>
+              {% else %}
+              <span class="muted" title="{{ t['final_block_reason'] }}">Menunggu Admin</span>
+              {% endif %}
               <form method="post" action="{{ url_for('web.superadmin_tx_reject', txid=t['id']) }}" onsubmit="return confirm('Tolak pengajuan ini?');">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button class="btn btn-outline btn-sm">Tolak</button>
@@ -233,6 +256,7 @@
             <th>Admin</th>
             <th>Rekening Tujuan</th>
             <th>No Telp</th>
+            <th>Tahap Approval</th>
             <th style="width:220px;">Aksi</th>
           </tr>
         </thead>
@@ -247,12 +271,17 @@
             <td>{{ "{:,}".format(t['admin_fee']).replace(",", ".") }}</td>
             <td>{{ t['no_rekening'] or '-' }}</td>
             <td>{{ t['no_telp'] or '-' }}</td>
+            <td>{{ tahap(t) }}</td>
             <td>
               <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                <form method="post" action="{{ url_for('web.superadmin_tx_approve', txid=t['id']) }}">
+                {% if t['can_final'] %}
+                <form method="post" action="{{ url_for('web.superadmin_tx_approve', txid=t['id']) }}" onsubmit="return confirm('PT ini tidak punya Admin dengan hak approval - klik Approve akan LANGSUNG menandai transaksi ini sukses (transfer dilakukan sekarang oleh Anda).');">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <button class="btn btn-sm btn-alert">Approve</button>
                 </form>
+                {% else %}
+                <span class="muted" title="{{ t['final_block_reason'] }}">Menunggu Admin</span>
+                {% endif %}
                 <form method="post" action="{{ url_for('web.superadmin_tx_reject', txid=t['id']) }}" onsubmit="return confirm('Tolak pengajuan ini?');">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <button class="btn btn-outline btn-sm">Tolak</button>
@@ -268,6 +297,63 @@
   </section>
 {% endif %}
 
+<!-- MENUNGGU TRANSFER: sudah di-approve Admin PT (layer 1 selesai), tinggal Superadmin transfer & klik Done -->
+<section class="card glass">
+  <h3>Menunggu Transfer{% if pending_transfer %} <span class="badge badge-urg">{{ pending_transfer|length }}</span>{% endif %}</h3>
+  <p class="muted" style="margin:0 0 10px;font-size:13px;">
+    Sudah di-approve Admin PT, tinggal Anda transfer manual lalu klik <b>Done</b> untuk menandai sukses.
+  </p>
+  {% if not pending_transfer %}
+    <p class="muted">Tidak ada transaksi yang menunggu transfer.</p>
+  {% else %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Waktu</th>
+          <th>ID Pegawai</th>
+          <th>Nama</th>
+          <th>Project</th>
+          <th>Nominal</th>
+          <th>Admin</th>
+          <th>Rekening Tujuan</th>
+          <th>No Telp</th>
+          <th>Tahap Approval</th>
+          <th style="width:220px;">Aksi</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in pending_transfer %}
+        <tr>
+          <td class="admin-time" data-ts="{{ t['created_at'] or t['tanggal'] }}"></td>
+          <td>{{ t['id_pegawai'] or '-' }}</td>
+          <td>{{ t['nama'] }}</td>
+          <td>{{ t['perusahaan'] }}</td>
+          <td>{{ "{:,}".format(t['nominal']).replace(",", ".") }}</td>
+          <td>{{ "{:,}".format(t['admin_fee']).replace(",", ".") }}</td>
+          <td>{{ t['no_rekening'] or '-' }}</td>
+          <td>{{ t['no_telp'] or '-' }}</td>
+          <td>{{ tahap(t) }}</td>
+          <td>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              <form method="post" action="{{ url_for('web.superadmin_tx_approve', txid=t['id']) }}" onsubmit="return confirm('Sudah benar-benar ditransfer? Klik Done akan menandai transaksi ini SUKSES.');">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button class="btn btn-sm btn-alert">Done</button>
+              </form>
+              <form method="post" action="{{ url_for('web.superadmin_tx_reject', txid=t['id']) }}" onsubmit="return confirm('Tolak pengajuan ini? (sudah di-approve Admin PT, pastikan memang perlu ditolak)');">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button class="btn btn-outline btn-sm">Tolak</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+
 <section class="card glass kpi-wrap">
   <div class="kpi-grid">
   <div class="kpi-card"><small>Total Pegawai (master)</small><b>{{ total_pegawai }}</b></div>
@@ -279,12 +365,18 @@
   <div class="kpi-card" style="border-color:#ff1744; box-shadow:0 0 0 1px #ff1744 inset;">
     <small style="color:#ff8a80;font-weight:700;">Permintaan On-Proses</small>
     <b style="font-size:26px;color:#ff5252; animation: blink 1s infinite;">{{ pending_count }}</b>
+    {% if pending_admin_wait %}<div class="kpi-sub">{{ pending_admin_wait }} menunggu Admin PT</div>{% endif %}
   </div> 
   <div class="kpi-card"><small>Tidak Aktif</small><b>{{ inactive_count }}</b></div>
-  <div class="kpi-card soft-blue"><small>Pegawai Siklus A</small><b>{{ cycle_a }}</b></div>
-  <div class="kpi-card soft-green"><small>Pegawai Siklus B</small><b>{{ cycle_b }}</b></div>
-  <div class="kpi-card"><small>Pegawai Siklus C</small><b>{{ cycle_c }}</b></div>
-  <div class="kpi-card"><small>Pegawai Siklus D</small><b>{{ cycle_d }}</b></div>
+  <div class="kpi-card soft-blue"><small>Pegawai Bulanan A</small><b>{{ cycle_a }}</b></div>
+  <div class="kpi-card soft-green"><small>Pegawai Bulanan B</small><b>{{ cycle_b }}</b></div>
+  <div class="kpi-card"><small>Pegawai Bulanan C</small><b>{{ cycle_c }}</b></div>
+  <div class="kpi-card"><small>Pegawai Bulanan D</small><b>{{ cycle_d }}</b></div>
+  {% for day in ['Senin','Selasa','Rabu','Kamis','Jumat','Sabtu','Minggu'] %}
+    {% if weekly_cutoff_counts.get(loop.index0, 0) > 0 %}
+      <div class="kpi-card"><small>Cutoff {{ day }}</small><b>{{ weekly_cutoff_counts.get(loop.index0, 0) }}</b></div>
+    {% endif %}
+  {% endfor %}
   <div class="kpi-card"><small>Belum Tarik Gaji</small><b>{{ not_borrowed }}</b></div>
   <div class="kpi-card"><small>Jumlah Transaksi</small><b>{{ trx_count }}</b></div>
   <div class="kpi-card">
@@ -895,10 +987,13 @@ document.addEventListener('DOMContentLoaded', () => {
         <label>Siklus Pegawai</label>
         <select name="siklus">
           <option value="all">Semua</option>
-          <option value="A" {% if request.args.get('siklus') == 'A' %}selected{% endif %}>Siklus A</option>
-          <option value="B" {% if request.args.get('siklus') == 'B' %}selected{% endif %}>Siklus B</option>
-          <option value="C" {% if request.args.get('siklus') == 'C' %}selected{% endif %}>Siklus C</option>
-          <option value="D" {% if request.args.get('siklus') == 'D' %}selected{% endif %}>Siklus D</option>
+          <option value="A" {% if request.args.get('siklus') == 'A' %}selected{% endif %}>Bulanan A</option>
+          <option value="B" {% if request.args.get('siklus') == 'B' %}selected{% endif %}>Bulanan B</option>
+          <option value="C" {% if request.args.get('siklus') == 'C' %}selected{% endif %}>Bulanan C</option>
+          <option value="D" {% if request.args.get('siklus') == 'D' %}selected{% endif %}>Bulanan D</option>
+          {% for day in ['Senin','Selasa','Rabu','Kamis','Jumat','Sabtu','Minggu'] %}
+            <option value="W{{ loop.index0 }}" {% if request.args.get('siklus') == 'W' ~ loop.index0 %}selected{% endif %}>Cutoff {{ day }}</option>
+          {% endfor %}
         </select>
       </div>
       <div style="grid-column:1/-1;margin-top:14px;">

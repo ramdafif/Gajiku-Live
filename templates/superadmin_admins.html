@@ -69,6 +69,8 @@
           <th style="width:11%">No Telp</th>          
           <th style="width:13%">Perusahaan</th>
           <th style="width:7%">Status</th>
+          <th style="width:9%">Hak Approval</th>
+          <th style="width:10%">Cutoff Mingguan</th>
           <th style="width:6%">Aksi</th>
         </tr>
       </thead>
@@ -91,9 +93,24 @@
                     <span class="badge badge-urg">NON-AKTIF</span>
                 {% endif %}
                 </td>
-                
-                <!-- <td><span class="badge badge-a">A</span></td> -->
-                
+
+                <td>
+                {% if r['hak_approval'] == 1 or r['hak_approval'] == '1' %}
+                    <span class="badge badge-reg">ON</span>
+                {% else %}
+                    <span class="muted">OFF</span>
+                {% endif %}
+                </td>
+
+                <td>
+                {% if r['cutoff_mingguan_aktif'] == 1 or r['cutoff_mingguan_aktif'] == '1' %}
+                    <span class="badge badge-reg">ON</span>
+                    <small>{{ ['Senin','Selasa','Rabu','Kamis','Jumat','Sabtu','Minggu'][r['cutoff_hari']|int] }}</small>
+                {% else %}
+                    <span class="muted">OFF</span>
+                {% endif %}
+                </td>
+
                 <td>
                 <button class="btn btn-outline btn-sm"
                         onclick='openEditModal({
@@ -103,7 +120,10 @@
                             email: {{ r["email"]|tojson }},
                             no_telp: {{ r["no_telp"]|tojson }},
                             company: {{ r["company"]|tojson }},
-                            status: {{ (r["status_aktif"] or 0)|tojson }}
+                            status: {{ (r["status_aktif"] or 0)|tojson }},
+                            hak_approval: {{ (r["hak_approval"] or 0)|tojson }}
+                            ,cutoff_mingguan_aktif: {{ (r["cutoff_mingguan_aktif"] or 0)|tojson }}
+                            ,cutoff_hari: {{ (r["cutoff_hari"] if r["cutoff_hari"] is not none else 2)|tojson }}
                         })'>Edit</button>
                 </td>
             </tr>
@@ -133,6 +153,17 @@
             <option value="1">Aktif</option>
             <!-- <option value="0">Non-Aktif</option> -->
         </label>
+        </div>
+        <div style="grid-column:span 3;display:flex;align-items:center;gap:8px;margin-top:6px;">
+          <input type="checkbox" id="add_hak_approval" name="hak_approval" value="1" style="width:auto;">
+          <label for="add_hak_approval" style="margin:0;">Beri hak approve/tolak tarik gaji</label>
+        </div>
+        <div style="grid-column:span 3;display:flex;align-items:center;gap:8px;margin-top:6px;">
+          <input type="checkbox" id="add_cutoff_mingguan_aktif" name="cutoff_mingguan_aktif" value="1" style="width:auto;">
+          <label for="add_cutoff_mingguan_aktif" style="margin:0;">Aktifkan cutoff mingguan</label>
+          <select id="add_cutoff_hari" name="cutoff_hari" disabled>
+            {% for day in ['Senin','Selasa','Rabu','Kamis','Jumat','Sabtu','Minggu'] %}<option value="{{ loop.index0 }}"{% if loop.index0 == 2 %} selected{% endif %}>{{ day }}</option>{% endfor %}
+          </select>
         </div>
 
         <div class="pegawai-form-actions" style="grid-column: 1/-1;">
@@ -166,6 +197,17 @@
           <option value="0">Non-Aktif</option>
         </select>
       </div>
+      <div style="grid-column:span 3;display:flex;align-items:center;gap:8px;margin-top:22px;">
+        <input type="checkbox" id="m_hak_approval" name="hak_approval" value="1" style="width:auto;">
+        <label for="m_hak_approval" style="margin:0;">Beri hak approve/tolak tarik gaji</label>
+      </div>
+      <div style="grid-column:span 3;display:flex;align-items:center;gap:8px;margin-top:6px;">
+        <input type="checkbox" id="m_cutoff_mingguan_aktif" name="cutoff_mingguan_aktif" value="1" style="width:auto;">
+        <label for="m_cutoff_mingguan_aktif" style="margin:0;">Aktifkan cutoff mingguan</label>
+        <select id="m_cutoff_hari" name="cutoff_hari" disabled>
+          {% for day in ['Senin','Selasa','Rabu','Kamis','Jumat','Sabtu','Minggu'] %}<option value="{{ loop.index0 }}">{{ day }}</option>{% endfor %}
+        </select>
+      </div>
 
     </form>
 
@@ -197,6 +239,9 @@
       if(defaultCycle) defaultCycle.checked = true;
       // const defaultFee = f.querySelector('input[name="admin_fee_flat"][value="15000"]');
       // if(defaultFee) defaultFee.checked = true;
+      const cutoff = document.getElementById('add_cutoff_mingguan_aktif');
+      const cutoffDay = document.getElementById('add_cutoff_hari');
+      if(cutoff && cutoffDay){ cutoff.checked = false; cutoffDay.disabled = true; }
     }
     m.style.display = 'flex';
     syncModalLayer();
@@ -212,6 +257,10 @@ function openEditModal(data){
     document.getElementById('m_no_telp').value    = data.no_telp || '';
     document.getElementById('m_perusahaan').value  = data.company || '';  // data.company dikirim dari onclick button
     document.getElementById('m_status').value      = (data.status == 1 ? '1' : '0');
+    document.getElementById('m_hak_approval').checked = (data.hak_approval == 1 || data.hak_approval === '1');
+    document.getElementById('m_cutoff_mingguan_aktif').checked = (data.cutoff_mingguan_aktif == 1 || data.cutoff_mingguan_aktif === '1');
+    document.getElementById('m_cutoff_hari').value = String(data.cutoff_hari ?? 2);
+    document.getElementById('m_cutoff_hari').disabled = !document.getElementById('m_cutoff_mingguan_aktif').checked;
 
     // Set action URL dinamis ke rute backend superadmin_edit_admin & delete
     const updBase = "{{ url_for('web.superadmin_edit_admin', admin_id=0) }}";
@@ -234,6 +283,10 @@ function openEditModal(data){
 
   // Wiring tombol Batal + overlay + ESC untuk kedua modal
   document.addEventListener('DOMContentLoaded', () => {
+    [['add_cutoff_mingguan_aktif','add_cutoff_hari'],['m_cutoff_mingguan_aktif','m_cutoff_hari']].forEach(([check, select]) => {
+      const c = document.getElementById(check), s = document.getElementById(select);
+      if(c && s) c.addEventListener('change', () => { s.disabled = !c.checked; });
+    });
     ['addModal','editModal'].forEach(mid=>{
       const m = document.getElementById(mid);
       if(!m) return;

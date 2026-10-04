@@ -22,6 +22,10 @@
 
 <section class="actions-row admin-pegawai-actions" style="margin-bottom:12px">
   <button class="btn btn-outline btn-sm admin-pegawai-action" onclick="openAddModal()">+ Pegawai</button>
+  <button class="btn btn-outline btn-sm admin-pegawai-action" onclick="openImportModal()">Import Excel</button>
+  {% if can_manage_windu_projects %}
+  <button class="btn btn-outline btn-sm admin-pegawai-action" onclick="openWinduProjectsModal()">Kelola Project Windu Karya</button>
+  {% endif %}
   <a class="btn btn-outline btn-sm admin-pegawai-action" 
    href="{{ url_for('web.superadmin_dashboard') if session.get('is_superadmin') else url_for('web.admin_dashboard') }}">
    Dashboard
@@ -92,6 +96,8 @@
       <tbody>
         {% for r in rows %}
         {% set sg = r['siklus_gaji'] if 'siklus_gaji' in r.keys() else 'A' %}
+        {% set cutoff_on = r['cutoff_mingguan_aktif']|int == 1 if 'cutoff_mingguan_aktif' in r.keys() else false %}
+        {% set cutoff_names = ['Senin','Selasa','Rabu','Kamis','Jumat','Sabtu','Minggu'] %}
         <tr>
           <td>{{ r['id_pegawai'] or '-' }}</td>
           <td>{{ r['nama'] }}</td>
@@ -101,7 +107,7 @@
           <td>{{ r['perusahaan'] }}</td>
           <td>{{ "{:,}".format(r['gaji'] or 0).replace(",", ".") }}</td>
           {% if session.get('is_superadmin') %}
-          <td>{{ "{:,}".format(r['admin_fee_flat'] or 15000).replace(",", ".") }}</td>
+          <td>{{ "{:,}".format(r['admin_fee_flat'] if r['admin_fee_flat'] is not none else 15000).replace(",", ".") }}</td>
           {% endif %}
           <td>
             {% if r['status_aktif'] %}
@@ -110,7 +116,13 @@
               <span class="badge badge-urg">NON-AKTIF</span>
             {% endif %}
           </td>
-          <td><span class="badge badge-{{ (sg or 'A')|lower }}">{{ sg or 'A' }}</span></td>
+          <td>
+            {% if cutoff_on %}
+              <span class="badge badge-reg">{{ cutoff_names[(r['cutoff_hari']|int) if r['cutoff_hari'] is not none else 2] }}</span>
+            {% else %}
+              <span class="badge badge-{{ (sg or 'A')|lower }}">{{ sg or 'A' }}</span>
+            {% endif %}
+          </td>
           <td>
             <button class="btn btn-outline btn-sm"
                     onclick='openEditModal({
@@ -120,12 +132,13 @@
                       email:{{ r["email"]|tojson }},
                       jabatan:{{ r["jabatan"]|tojson }},
                       perusahaan:{{ r["perusahaan"]|tojson }},
+                      perusahaan_induk:{{ r["perusahaan_induk"]|tojson }},
                       no_rekening:{{ r["no_rekening"]|tojson }},
                       no_rekening_lain:{{ r["no_rekening_lain"]|tojson }},
                       rekening_ewallet:{{ r["rekening_ewallet"]|tojson }},
                       no_telp:{{ r["no_telp"]|tojson }},
                       gaji:{{ (r["gaji"] or 0)|tojson }},
-                      admin_fee_flat:{{ (r["admin_fee_flat"] or 15000)|tojson }},
+                      admin_fee_flat:{{ (r["admin_fee_flat"] if r["admin_fee_flat"] is not none else 15000)|tojson }},
                       status:{{ (r["status_aktif"] or 0)|tojson }},
                       siklus:{{ (sg or "A")|tojson }}
                     })'>Edit</button>
@@ -138,6 +151,70 @@
   {% endif %}
 </section>
 
+{% if can_manage_windu_projects %}
+<!-- ===== Modal Kelola Project PT Windu Karya (anti typo/duplikat nama project) ===== -->
+<div id="winduProjectsModal" class="modal" style="display:none">
+  <div class="modal-content modal-skin">
+    <button class="modal-close" type="button" data-close aria-label="Tutup">x</button>
+    <h3 style="margin-top:0">Kelola Project PT Windu Karya</h3>
+    <p class="muted" style="font-size:13px;margin:0 0 12px;">
+      Daftarkan nama project di sini dulu, baru muncul di dropdown "Perusahaan" saat tambah/edit pegawai.
+      Ini mencegah project yang sama tersimpan dengan nama berbeda-beda gara-gara typo.
+    </p>
+    <form method="post" action="{{ url_for('web.admin_windu_projects_add') }}" style="display:flex;gap:8px;margin-bottom:14px;">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="text" name="nama_project" placeholder="Nama project baru" required style="flex:1">
+      <button type="submit" class="btn btn-sm">Daftarkan</button>
+    </form>
+    <div class="table-wrap" style="max-height:280px;overflow:auto;">
+      <table>
+        <thead><tr><th>Nama Project</th><th style="width:90px;">Aksi</th></tr></thead>
+        <tbody>
+          {% for p in windu_project_rows %}
+          <tr>
+            <td>{{ p.nama_project }}</td>
+            <td>
+              <form method="post" action="{{ url_for('web.admin_windu_projects_delete', proj_id=p.id) }}"
+                    onsubmit="return confirm('Hapus project ini? Hanya bisa dihapus kalau sudah tidak dipakai pegawai manapun.');">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-outline btn-sm">Hapus</button>
+              </form>
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="2" class="muted">Belum ada project terdaftar.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<!-- ===== Modal Import Pegawai Massal (Excel .xlsx) ===== -->
+<div id="importModal" class="modal" style="display:none">
+  <div class="modal-content modal-skin">
+    <button class="modal-close" type="button" data-close aria-label="Tutup">x</button>
+    <h3 style="margin-top:0">Import Pegawai dari Excel</h3>
+    <p class="muted" style="font-size:13px;margin:0 0 4px;">
+      1) Unduh template, isi sesuai contoh & petunjuk di dalamnya, 2) upload lagi file yang sudah diisi.
+      Baris yang valid tetap masuk walau ada baris lain yang gagal — hasil & alasan gagal akan ditampilkan
+      setelah upload.
+    </p>
+    <a class="btn btn-outline btn-sm" style="margin:8px 0 16px;display:inline-block"
+       href="{{ url_for('web.admin_pegawai_import_template') }}">⬇ Download Template Excel</a>
+
+    <form method="post" action="{{ url_for('web.admin_pegawai_import') }}" enctype="multipart/form-data">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="file" name="file" accept=".xlsx" required style="width:100%;margin-bottom:12px;">
+      <div class="modal-actions" style="display:flex;gap:8px;justify-content:flex-end;">
+        <button type="button" class="btn btn-outline" data-close>Batal</button>
+        <button type="submit" class="btn">Upload &amp; Import</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <!-- ===== Modal Tambah Pegawai ===== -->
 <div id="addModal" class="modal" style="display:none">
   <div class="modal-content modal-skin">
@@ -148,7 +225,24 @@
       <div style="grid-column:span 3"><label>Nama</label><input name="nama" required></div>
       <div style="grid-column:span 3"><label>Email</label><input name="email" type="email" required></div>
       <div style="grid-column:span 3"><label>Jabatan</label><input name="jabatan"></div>
-      <div style="grid-column:span 3"><label>Perusahaan</label><input name="perusahaan" placeholder="opsional"></div>
+      <div style="grid-column:span 3">
+        <label>Perusahaan</label>
+        <input name="perusahaan_induk" placeholder="nama perusahaan">
+      </div>
+      <div style="grid-column:span 3">
+        <label>Projects</label>
+        {% if is_windu_admin %}
+          <select name="perusahaan" id="add_perusahaan_select" required>
+            <option value="" disabled selected>Pilih project...</option>
+            {% for p in windu_projects %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+          </select>
+          {% if not windu_projects %}
+            <small class="muted">Belum ada project terdaftar. Daftarkan dulu lewat "Kelola Project" di atas.</small>
+          {% endif %}
+        {% else %}
+          <input name="perusahaan" placeholder="opsional">
+        {% endif %}
+      </div>
       <div style="grid-column:span 3"><label>No_Rek Bank</label><input name="no_rekening" placeholder="rekening bank utama"></div>
       <div style="grid-column:span 3"><label>No_Rek Bank 2</label><input name="no_rekening_lain" placeholder="opsional"></div>
       <div style="grid-column:span 3"><label>Rek E-Wallet</label><input name="rekening_ewallet" pattern="[A-Za-z0-9 ]*" placeholder="GOPAY 08123456789"></div>
@@ -183,15 +277,14 @@
 
       <div style="grid-column:span 3">
         {% if session.get('is_superadmin') %}
-          <label>Admin Fee (Rp)</label>
-          <input type="number"
-                 id="add_admin_fee_flat"
-                 name="admin_fee_flat"
-                 inputmode="numeric"
-                 min="0"
-                 step="500"
-                 placeholder="contoh: 15000"
-                 value="15000">
+          <label>Admin Fee Flat</label>
+          <input id="add_admin_fee_flat" name="admin_fee_flat" type="text" inputmode="numeric"
+                 pattern="[0-9.]+" placeholder="isi manual, cth: 15000" autocomplete="off" required>
+        {% else %}
+          <!-- <div class="cycle-toggle fee-toggle" style="opacity: 0.6; pointer-events: none; z-index: 0 !important;">
+            <label><input type="radio" name="admin_fee_flat" value="15000" checked disabled><span>15.000 (Locked)</span></label>
+          </div>
+          <input type="hidden" name="admin_fee_flat" id="m_admin_fee_flat_hidden" value="15000"> -->
         {% endif %}
       </div>
       <div class="pegawai-form-actions" style="grid-column:1/-1">
@@ -214,7 +307,21 @@
       <div style="grid-column:span 3"><label>Nama</label><input id="m_nama" name="nama" required></div>
       <div style="grid-column:span 3"><label>Email</label><input id="m_email" name="email" type="email" required></div>
       <div style="grid-column:span 3"><label>Jabatan</label><input id="m_jabatan" name="jabatan"></div>
-      <div style="grid-column:span 3"><label>Perusahaan</label><input id="m_perusahaan" name="perusahaan"></div>
+      <div style="grid-column:span 3">
+        <label>Perusahaan</label>
+        <input id="m_perusahaan_induk" name="perusahaan_induk" placeholder="nama perusahaan">
+      </div>
+      <div style="grid-column:span 3">
+        <label>Projects</label>
+        {% if is_windu_admin %}
+          <select id="m_perusahaan" name="perusahaan" required>
+            <option value="" disabled>Pilih project...</option>
+            {% for p in windu_projects %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+          </select>
+        {% else %}
+          <input id="m_perusahaan" name="perusahaan">
+        {% endif %}
+      </div>
       <div style="grid-column:span 3"><label>No_Rek Bank</label><input id="m_no_rekening" name="no_rekening" placeholder="rekening bank utama"></div>
       <div style="grid-column:span 3"><label>No_Rek Bank 2</label><input id="m_no_rekening_lain" name="no_rekening_lain" placeholder="opsional"></div>
       <div style="grid-column:span 3"><label>Rek E-Wallet</label><input id="m_rekening_ewallet" name="rekening_ewallet" pattern="[A-Za-z0-9 ]*" placeholder="GOPAY 08123456789"></div>
@@ -240,14 +347,15 @@
 
       <div style="grid-column:span 2">
         {% if session.get('is_superadmin') %}
-          <label>Admin Fee (Rp)</label>
-          <input type="number"
-                 id="m_admin_fee_flat"
-                 name="admin_fee_flat"
-                 inputmode="numeric"
-                 min="0"
-                 step="500"
-                 placeholder="contoh: 15000">
+          <label>Admin Fee Flat</label>
+          <input id="m_admin_fee_flat" name="admin_fee_flat" type="text" inputmode="numeric"
+                 pattern="[0-9.]+" placeholder="isi manual, cth: 15000" autocomplete="off" required>
+        {% else %}
+          <!-- <div class="cycle-toggle fee-toggle" id="m_admin_fee_flat_disabled" style="opacity: 0.6; pointer-events: none; z-index: 0 !important;">
+            <label><input type="radio" name="admin_fee_flat" value="15000" disabled><span>15.000</span></label>
+            <label><input type="radio" name="admin_fee_flat" value="17000" disabled><span>17.000</span></label>
+          </div>
+          <input type="hidden" name="admin_fee_flat" id="m_admin_fee_flat_hidden" value="15000"> -->
         {% endif %}
       </div>
     </form>
@@ -271,6 +379,18 @@
     });
     document.body.classList.toggle('modal-open', anyOpen);
   }
+  function openWinduProjectsModal(){
+    const m = document.getElementById('winduProjectsModal');
+    if(!m) return;
+    m.style.display = 'flex';
+    syncModalLayer();
+  }
+  function openImportModal(){
+    const m = document.getElementById('importModal');
+    if(!m) return;
+    m.style.display = 'flex';
+    syncModalLayer();
+  }
   function openAddModal(){
     const m = document.getElementById('addModal');
     const f = document.getElementById('addForm');
@@ -284,6 +404,13 @@
     m.style.display = 'flex';
     syncModalLayer();
   }
+  // Admin fee sekarang input manual (bukan radio 15.000/17.000). Nilai 0 tetap valid.
+  function setEditAdminFeeValue(value){
+    const el = document.getElementById('m_admin_fee_flat');
+    if (!el) return;   // admin biasa: field tidak dirender
+    el.value = (value === null || value === undefined || value === '') ? 15000 : value;
+  }
+
   function openEditModal(data){
     const m = document.getElementById('editModal');
 
@@ -293,7 +420,23 @@
     document.getElementById('m_nama').value       = data.nama || '';
     document.getElementById('m_email').value      = data.email || '';
     document.getElementById('m_jabatan').value    = data.jabatan || '';
-    document.getElementById('m_perusahaan').value = data.perusahaan || '';
+    document.getElementById('m_perusahaan_induk').value = data.perusahaan_induk || '';
+    (function(){
+      const el = document.getElementById('m_perusahaan');
+      const val = data.perusahaan || '';
+      if (el.tagName === 'SELECT') {
+        // Kalau project pegawai ini sudah tidak ada di daftar resmi (mis. sudah dihapus),
+        // tetap tampilkan apa adanya supaya tidak diam-diam berubah saat disimpan ulang.
+        if (val && !el.querySelector(`option[value="${CSS.escape(val)}"]`)) {
+          const opt = document.createElement('option');
+          opt.value = val; opt.textContent = val + ' (tidak terdaftar)';
+          el.appendChild(opt);
+        }
+        el.value = val;
+      } else {
+        el.value = val;
+      }
+    })();
     document.getElementById('m_no_rekening').value = data.no_rekening || '';
     document.getElementById('m_no_rekening_lain').value = data.no_rekening_lain || '';
     document.getElementById('m_rekening_ewallet').value = data.rekening_ewallet || '';
@@ -302,9 +445,7 @@
     document.getElementById('m_status').value     = (data.status ? '1' : '0');
     const selectedCycle = document.querySelector(`#m_siklus input[name="siklus_gaji"][value="${data.siklus || 'A'}"]`);
     if(selectedCycle) selectedCycle.checked = true;
-    // Isi input admin fee (hanya ada jika superadmin)
-    const feeInput = document.getElementById('m_admin_fee_flat');
-    if (feeInput) feeInput.value = data.admin_fee_flat || 15000;
+    setEditAdminFeeValue(data.admin_fee_flat);
 
     // set action URLs
     const updBase = "{{ url_for('web.admin_pegawai_update', pid=0) }}"; // /admin/pegawai/0/update
@@ -325,7 +466,7 @@
 
   // Wiring tombol Batal + overlay + ESC untuk kedua modal
   document.addEventListener('DOMContentLoaded', () => {
-    ['addModal','editModal'].forEach(mid=>{
+    ['addModal','editModal','winduProjectsModal','importModal'].forEach(mid=>{
       const m = document.getElementById(mid);
       if(!m) return;
       m.querySelectorAll('[data-close]').forEach(el=>{
@@ -334,7 +475,7 @@
       m.addEventListener('click', (e)=>{ if(e.target===m) closeModal(mid); });
     });
     window.addEventListener('keydown', e=>{
-      if(e.key==='Escape'){ closeModal('addModal'); closeModal('editModal'); }
+      if(e.key==='Escape'){ closeModal('addModal'); closeModal('editModal'); closeModal('winduProjectsModal'); closeModal('importModal'); }
     });
   });
 </script>

@@ -154,10 +154,15 @@
     <b style="font-size:26px;color:#ff5252; animation: blink 1s infinite;">{{ pending_count }}</b>
   </div> 
   <div class="kpi-card"><small>Tidak Aktif</small><b>{{ inactive_count }}</b></div>
-  <div class="kpi-card soft-blue"><small>Pegawai Siklus A</small><b>{{ cycle_a }}</b></div>
-  <div class="kpi-card soft-green"><small>Pegawai Siklus B</small><b>{{ cycle_b }}</b></div>
-  <div class="kpi-card"><small>Pegawai Siklus C</small><b>{{ cycle_c }}</b></div>
-  <div class="kpi-card"><small>Pegawai Siklus D</small><b>{{ cycle_d }}</b></div>
+  <div class="kpi-card soft-blue"><small>Pegawai Bulanan A</small><b>{{ cycle_a }}</b></div>
+  <div class="kpi-card soft-green"><small>Pegawai Bulanan B</small><b>{{ cycle_b }}</b></div>
+  <div class="kpi-card"><small>Pegawai Bulanan C</small><b>{{ cycle_c }}</b></div>
+  <div class="kpi-card"><small>Pegawai Bulanan D</small><b>{{ cycle_d }}</b></div>
+  {% for day in ['Senin','Selasa','Rabu','Kamis','Jumat','Sabtu','Minggu'] %}
+    {% if weekly_cutoff_counts.get(loop.index0, 0) > 0 %}
+      <div class="kpi-card"><small>Cutoff {{ day }}</small><b>{{ weekly_cutoff_counts.get(loop.index0, 0) }}</b></div>
+    {% endif %}
+  {% endfor %}
   <div class="kpi-card"><small>Belum Tarik Gaji</small><b>{{ not_borrowed }}</b></div>
   <div class="kpi-card"><small>Jumlah Transaksi</small><b>{{ trx_count }}</b></div>
 
@@ -175,12 +180,8 @@
   <canvas id="chartTrx" height="120"></canvas>
 </section>
 
-<!-- PERMINTAAN REG ON-PROSES -->
-<!-- <section class="card glass">
-  <h3>Permintaan Reg On-Proses</h3>
-  {% if not pending_reg %}
-    <p class="muted">Tidak ada pengajuan Reg yang menunggu.</p>
-  {% else %}
+<!-- ===== ANTRIAN APPROVAL - 2 LAYER: Admin (approve) -> Superadmin (approve final & transfer) ===== -->
+{% macro pending_table(rows) %}
   <div class="table-wrap">
     <table>
       <thead>
@@ -192,11 +193,12 @@
           <th>Nominal</th>
           <th>Rekening Tujuan</th>
           <th>No Telp</th>
+          <th>Tahap Approval</th>
           <th style="width:220px;">Aksi</th>
         </tr>
       </thead>
       <tbody>
-        {% for t in pending_reg %}
+        {% for t in rows %}
         <tr>
           <td class="admin-time" data-ts="{{ t['created_at'] or t['tanggal'] }}"></td>
           <td>{{ t['id_pegawai'] or '-' }}</td>
@@ -206,8 +208,22 @@
           <td>{{ t['no_rekening'] or '-' }}</td>
           <td>{{ t['no_telp'] or '-' }}</td>
           <td>
+            {% if t['stage'] == 'menunggu_superadmin' %}
+              <span class="badge">Sudah di-approve Admin</span><br>
+              <small class="muted">Menunggu approve Superadmin{% if t['admin_approved_by'] %} (oleh {{ t['admin_approved_by'] }}){% endif %}</small>
+            {% elif t['admin_can_act'] %}
+              <span class="badge badge-urg">Menunggu approve Anda</span>
+              {% if t['is_windu'] %}<br><small class="muted">Setelah ini Superadmin approve &amp; transfer</small>{% endif %}
+            {% elif not session.get('hak_approval') %}
+              <span class="muted">Anda tidak punya hak approval</span>
+            {% else %}
+              <span class="muted">Di luar cakupan Anda</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if t['admin_can_act'] %}
             <div style="display:flex;gap:8px;flex-wrap:wrap;">
-              <form method="post" action="{{ url_for('web.admin_tx_approve', txid=t['id']) }}">
+              <form method="post" action="{{ url_for('web.admin_tx_approve', txid=t['id']) }}" onsubmit="return confirm('Approve pengajuan ini? Setelah ini masih menunggu approve Superadmin.');">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button class="btn btn-sm btn-alert">Approve</button>
               </form>
@@ -216,66 +232,42 @@
                 <button class="btn btn-outline btn-sm">Tolak</button>
               </form>
             </div>
+            {% else %}
+              <span class="muted">-</span>
+            {% endif %}
           </td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
+{% endmacro %}
+
+<!-- PERMINTAAN REG ON-PROSES -->
+<section class="card glass">
+  <h3>Permintaan Reg On-Proses</h3>
+  <p class="muted" style="margin:0 0 10px;font-size:13px;">
+    Approval 2 layer: <b>Admin</b> approve lebih dulu, lalu <b>Superadmin</b> approve final &amp; transfer.
+    {% if pending_admin_count is defined and pending_admin_count %}<span class="badge badge-urg">{{ pending_admin_count }} menunggu approve Anda</span>{% endif %}
+  </p>
+  {% if not pending_reg %}
+    <p class="muted">Tidak ada pengajuan Reg yang menunggu.</p>
+  {% else %}
+    {{ pending_table(pending_reg) }}
   {% endif %}
 </section>
 
-PERMINTAAN URG ON-PROSES
-{% if 'urg' in enabled_products %}
+<!-- PERMINTAAN URG ON-PROSES -->
+{% if 'urg' in (enabled_products or []) %}
   <section class="card glass">
     <h3>Permintaan Urg On-Proses</h3>
     {% if not pending_urg %}
       <p class="muted">Tidak ada pengajuan Urg yang menunggu.</p>
     {% else %}
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Waktu</th>
-            <th>ID Pegawai</th>
-            <th>Nama</th>
-            <th>Project</th>
-            <th>Nominal</th>
-            <th>Rekening Tujuan</th>
-            <th>No Telp</th>
-            <th style="width:220px;">Aksi</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for t in pending_urg %}
-          <tr>
-            <td class="admin-time" data-ts="{{ t['created_at'] or t['tanggal'] }}"></td>
-            <td>{{ t['id_pegawai'] or '-' }}</td>
-            <td>{{ t['nama'] }}</td>
-            <td>{{ t['perusahaan'] }}</td>
-            <td>{{ "{:,}".format(t['nominal']).replace(",", ".") }}</td>
-            <td>{{ t['no_rekening'] or '-' }}</td>
-            <td>{{ t['no_telp'] or '-' }}</td>
-            <td>
-              <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                <form method="post" action="{{ url_for('web.admin_tx_approve', txid=t['id']) }}">
-                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                  <button class="btn btn-sm btn-alert">Approve</button>
-                </form>
-                <form method="post" action="{{ url_for('web.admin_tx_reject', txid=t['id']) }}" onsubmit="return confirm('Tolak pengajuan ini?');">
-                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                  <button class="btn btn-outline btn-sm">Tolak</button>
-                </form>
-              </div>
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
+      {{ pending_table(pending_urg) }}
     {% endif %}
   </section>
-{% endif %} -->
+{% endif %}
 
 <section class="card glass">
   <button class="collapse-toggle" type="button" data-target="analytics-panel">

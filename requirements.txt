@@ -5,3 +5,4 @@ rq
 pytest
 mysql-connector-python
 python-dotenv
+openpyxl

@@ -32,6 +32,14 @@
     </div>
 
     <div>
+      <label>Projects</label>
+      <select name="project">
+        <option value="">- Semua Projects -</option>
+        {% for p in projects %}<option value="{{ p }}" {{ 'selected' if f_project == p else '' }}>{{ p }}</option>{% endfor %}
+      </select>
+    </div>
+
+    <div>
       <label>Produk</label>
       <select name="product">
         <option value="">- Semua -</option>
@@ -121,7 +129,10 @@
   
   <div class="muted" style="margin-top:8px;">
     Total sukses: {{ (total_nom | rupiah) | replace('Rp. ', '') | replace('Rp.', '') }} |
-    Admin fee: {{ (total_admin | rupiah) | replace('Rp. ', '') | replace('Rp.', '') }}
+    Admin fee: {{ (total_admin | rupiah) | replace('Rp. ', '') | replace('Rp.', '') }}<br>
+    {% if f_company|lower|trim == 'guixu' %}
+      Fee Guixu: {{ (total_guixu_fee | rupiah) | replace('Rp. ', '') | replace('Rp.', '') }}
+    {% endif %}
   </div>
   {% endif %}
 </section>

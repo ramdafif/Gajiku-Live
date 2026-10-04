@@ -1,5 +1,8 @@
 import json, math, re, calendar, sqlite3, time, os
 from datetime import datetime, date, timedelta
+from openpyxl import Workbook, load_workbook
+from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.styles import Font, PatternFill, Alignment
 from flask import Blueprint, current_app, render_template, request, redirect, url_for, session, flash, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
@@ -8,7 +11,7 @@ import csv, io
 from app import db
 from app.db import get_db
 from app.repositories.user_repo import get_user_by_id, get_user_by_email
-from app.utils.cache import get_cache, set_cache
+from app.utils.cache import get_cache, set_cache, clear_cache_prefix
 from app.tasks.queue import get_stats as get_queue_stats
 from app.services.email_service import enqueue_email
 
@@ -141,16 +144,31 @@ SIKLUS_START_DAY = {
     "D": 26,
 }
 VALID_SIKLUS = tuple(SIKLUS_START_DAY.keys())
+# NOTE: sejak fee admin diinput manual, tuple ini HANYA informasi default/saran (dipakai /health),
+# TIDAK lagi dipakai untuk validasi. Validasi memakai ADMIN_FEE_FLAT_MIN/MAX di bawah.
 ADMIN_FEE_FLAT_OPTIONS = (15000, 17000)
+ADMIN_FEE_FLAT_MIN = 0
+ADMIN_FEE_FLAT_MAX = 1_000_000   # batas pengaman salah ketik (sama dgn batas nominal REG)
 REG_WITHDRAWAL_MAX = 1_000_000
 
 def normalize_siklus(value: str, default: str = "A") -> str:
     siklus = (value or default).strip().upper()
     return siklus if siklus in VALID_SIKLUS else default
 
+def parse_admin_fee_flat(value):
+    """Parse fee admin hasil input manual. Return int, atau None bila kosong/tidak valid.
+    Menerima format '15000' maupun '15.000'."""
+    if value is None or str(value).strip() == "":
+        return None
+    fee = parse_int(value, None)
+    if fee is None or fee < ADMIN_FEE_FLAT_MIN or fee > ADMIN_FEE_FLAT_MAX:
+        return None
+    return fee
+
 def normalize_admin_fee_flat(value, default: int = 15000) -> int:
-    fee = parse_int(value, default)
-    return fee if fee >= 0 else default
+    # Fee kini bebas (input manual), bukan lagi hanya pilihan 15.000 / 17.000.
+    fee = parse_admin_fee_flat(value)
+    return fee if fee is not None else default
 
 def compute_limits(gaji: int, at_date: date, user_id: int):
     """
@@ -165,21 +183,29 @@ def compute_limits(gaji: int, at_date: date, user_id: int):
 
     # Ambil email user + siklus dari master pegawai (join lewat email)
     row = db.execute("""
-        SELECT u.email, p.siklus_gaji
+        SELECT u.email, p.siklus_gaji, p.perusahaan_induk
         FROM users u
         LEFT JOIN pegawai p ON LOWER(p.email) = LOWER(u.email)
         WHERE u.id = ?
     """, (user_id,)).fetchone()
     user_email = (row["email"] if row and row["email"] else "").strip()
     siklus = normalize_siklus(row["siklus_gaji"] if row and row["siklus_gaji"] else "A")
+    weekly = get_weekly_cutoff_config(row["perusahaan_induk"] if row else "")
 
     # Plafon & limit harian
     plafon = math.floor(0.5 * (gaji or 0))
-    limit_harian = math.floor(plafon / 30) if gaji else 0
+    # Cutoff mingguan memakai plafon 7 hari. Pegawai lain tetap memakai
+    # skema bulanan lama dengan pembagi 30 hari.
+    limit_period_days = 7 if weekly else 30
+    limit_harian = math.floor(plafon / limit_period_days) if gaji else 0
 
     # Hari ke (menggunakan helper kamu) & kunci periode aktif
-    hari_ke = day_in_cycle(at_date, siklus)
-    mk = period_key_by_cycle(at_date, siklus)
+    if weekly:
+        hari_ke = weekly_day_in_period(at_date, weekly["cutoff_hari"])
+        mk = weekly_period_key(at_date, weekly["cutoff_hari"])
+    else:
+        hari_ke = day_in_cycle(at_date, siklus)
+        mk = period_key_by_cycle(at_date, siklus)
 
     # Total nominal di periode aktif s.d. hari ini (by email agar duplikat user_id tidak lolos)
     if user_email:
@@ -211,13 +237,63 @@ def compute_limits(gaji: int, at_date: date, user_id: int):
     return {
         "plafon": plafon,
         "limit_harian": limit_harian,
+        "limit_period_days": limit_period_days,
         "hari_ke": hari_ke,
         "total_sukses": total_sukses,
         "saldo": saldo,
         "periode_key": mk,
         "siklus": siklus,
         "sisa_plafon": sisa_plafon,
+        "cutoff_mingguan": bool(weekly),
+        "cutoff_hari": weekly["cutoff_hari"] if weekly else None,
     }
+
+
+def get_weekly_cutoff_config(company):
+    """Ambil konfigurasi cutoff aktif secara case-insensitive per company."""
+    company = (company or "").strip()
+    if not company:
+        return None
+    row = get_db().execute("""
+        SELECT cutoff_mingguan_aktif, cutoff_hari
+        FROM admins
+        WHERE LOWER(TRIM(company)) = LOWER(TRIM(?))
+          AND COALESCE(cutoff_mingguan_aktif, 0) = 1
+        ORDER BY id DESC LIMIT 1
+    """, (company,)).fetchone()
+    if not row:
+        return None
+    day = int(row["cutoff_hari"] if row["cutoff_hari"] is not None else 2)
+    return {"cutoff_hari": day if 0 <= day <= 6 else 2}
+
+
+def get_weekly_cutoff_counts(db, where_clause="1=1", where_params=None):
+    """Hitung pegawai aktif per hari cutoff untuk dashboard KPI."""
+    params = list(where_params or [])
+    rows = db.execute(f"""
+        SELECT a.cutoff_hari, COUNT(*) AS total
+        FROM pegawai p
+        JOIN admins a ON LOWER(TRIM(a.company)) = LOWER(TRIM(p.perusahaan_induk))
+        WHERE p.status_aktif=1
+          AND COALESCE(a.cutoff_mingguan_aktif, 0)=1
+          AND {where_clause}
+        GROUP BY a.cutoff_hari
+    """, params).fetchall()
+    return {int(r["cutoff_hari"]): int(r["total"] or 0) for r in rows}
+
+
+def weekly_period_start(d: date, cutoff_day: int) -> date:
+    """Periode Kamis-Rabu untuk cutoff Rabu; start adalah hari setelah cutoff."""
+    days_since_start = (d.weekday() - ((cutoff_day + 1) % 7)) % 7
+    return d - timedelta(days=days_since_start)
+
+
+def weekly_day_in_period(d: date, cutoff_day: int) -> int:
+    return (d - weekly_period_start(d, cutoff_day)).days + 1
+
+
+def weekly_period_key(d: date, cutoff_day: int) -> str:
+    return "W:" + weekly_period_start(d, cutoff_day).isoformat()
 
 def day_in_cycle(d: date, siklus: str) -> int:
     """Hitung hari ke- dalam periode berjalan sesuai siklus gaji."""
@@ -259,6 +335,12 @@ def format_short_date(d: date) -> str:
 
 def format_period_label(periode: str) -> str:
     """Format label periode 'YYYY-MM' menjadi 'Mon YYYY' (Indonesia)."""
+    if str(periode).startswith("W:"):
+        try:
+            start = date.fromisoformat(str(periode)[2:])
+            return f"{format_short_date(start)} – {format_short_date(start + timedelta(days=6))}"
+        except Exception:
+            return periode
     try:
         y, m = [int(x) for x in periode.split("-", 1)]
         months = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
@@ -281,6 +363,238 @@ def require_superadmin():
     if not session.get("is_superadmin"):
         flash("Hanya Superadmin yang memiliki akses ke halaman ini.", "error")
         return redirect(url_for("web.login"))
+
+# =========================================================================================
+# ===== 2-LAYER APPROVAL TARIK GAJI: Admin PT (layer 1)  ->  Superadmin (layer 2 / final) ====
+# =========================================================================================
+# Alur status transaksi (kolom `status` TIDAK berubah, tetap 'on-proses' sampai final):
+#   [pegawai ajukan] on-proses
+#        -> Admin PT approve  : admin_approved_at/by terisi, status MASIH 'on-proses'
+#        -> Superadmin approve: status 'sukses' (Superadmin yang melakukan transfer)
+#   Tolak: Admin PT hanya bisa menolak SEBELUM ia approve; Superadmin bisa menolak kapan saja.
+#
+# Aturan UMUM (semua PT):
+#   - Superadmin baru bisa approve final setelah Admin PT approve.
+#   - Pengecualian: PT yang memang belum punya akun admin -> tidak ada layer 1, Superadmin boleh langsung
+#     (supaya antrian tidak macet).
+#   - Admin PT hanya bisa memproses pegawai dalam cakupan dashboard-nya (induk -> anak PT, PT biasa -> PT sendiri).
+# Aturan KHUSUS PT WINDU (dikenali dari kata "windu" pada nama perusahaan pegawai / admin):
+#   - Admin PT Windu approve karyawan PT Windu SENDIRI (admin holding / admin global lama TIDAK boleh).
+#   - Setelah itu WAJIB approve Superadmin (yang melakukan transfer) -> tidak ada jalur langsung.
+LEGACY_GLOBAL_ADMIN_EMAIL = "admin@example.com"   # admin lama yang dashboard-nya melihat semua PT
+WINDU_COMPANY_NAME = "Windu Karya"   # exact match (case-insensitive, trim), bukan sekadar mengandung kata "windu"
+
+def _norm(value):
+    return (value or "").strip().lower()
+
+def is_windu_company(*names):
+    """True bila salah satu nama perusahaan SAMA PERSIS dengan 'Windu Karya' (bukan sekadar mengandung kata
+    'windu' - PT lain yang kebetulan memuat kata itu tidak ikut tertangkap)."""
+    target = _norm(WINDU_COMPANY_NAME)
+    return any(_norm(n) == target for n in names)
+
+def _is_parent_company(db, company):
+    """True bila `company` bertindak sebagai perusahaan induk/holding (mengelola beberapa anak
+    perusahaan/project). PT Windu Karya SELALU dianggap induk (walau belum ada satu pun pegawai
+    tersimpan) supaya dropdown project-nya berfungsi sejak awal - lihat WINDU_PROJECTS."""
+    company = (company or "").strip()
+    if not company:
+        return False
+    if is_windu_company(company):
+        return True
+    row = db.execute(
+        "SELECT 1 FROM pegawai WHERE LOWER(TRIM(perusahaan_induk)) = LOWER(TRIM(?)) LIMIT 1",
+        (company,),
+    ).fetchone()
+    return bool(row)
+
+def load_admin_companies(db):
+    """Kumpulan nama perusahaan (lowercase) yang punya admin dengan HAK APPROVAL menyala (hak_approval=1).
+    Ini yang menentukan apakah sebuah PT masih perlu layer 1 (admin approve dulu) atau langsung
+    bypass ke Superadmin - BUKAN sekadar "punya akun admin" lagi seperti sebelumnya. PT yang semua
+    adminnya hak_approval OFF (atau memang tidak punya admin sama sekali) dianggap sama seperti
+    "PT tanpa admin": Superadmin boleh approve+transfer langsung (kecuali PT Windu Karya)."""
+    rows = db.execute("""
+        SELECT DISTINCT LOWER(TRIM(company)) AS company
+        FROM admins
+        WHERE company IS NOT NULL AND TRIM(company) <> ''
+          AND LOWER(COALESCE(role, 'admin')) <> 'superadmin'
+          AND hak_approval = 1
+    """).fetchall()
+    return {r["company"] for r in rows if r["company"]}
+
+def company_has_admin(perusahaan, perusahaan_induk, admin_companies):
+    keys = {_norm(perusahaan), _norm(perusahaan_induk)} - {""}
+    return bool(keys & set(admin_companies))
+
+def get_tx_approval_row(db, txid):
+    """Ambil transaksi + perusahaan pegawainya + status approval layer 1."""
+    return db.execute("""
+        SELECT t.id, t.status, t.admin_approved_at, t.admin_approved_by,
+               COALESCE(p.perusahaan, '') AS perusahaan,
+               COALESCE(p.perusahaan_induk, '') AS perusahaan_induk
+        FROM transactions t
+        LEFT JOIN users u ON u.id = t.user_id
+        LEFT JOIN pegawai p ON LOWER(p.email) = LOWER(u.email)
+        WHERE t.id = ?
+    """, (txid,)).fetchone()
+
+def admin_can_handle(db, perusahaan, perusahaan_induk, self_is_parent=None):
+    """LAYER 1: apakah Admin PT yang sedang login berwenang atas transaksi pegawai ini?
+    Gerbang pertama: admin ini harus punya hak_approval menyala - kalau tidak, TIDAK PERNAH boleh
+    approve/tolak apa pun, terlepas dari PT mana pun (berlaku juga untuk admin global lama)."""
+    if not session.get("hak_approval"):
+        return False
+
+    company = _norm(session.get("company"))
+    peg_c, peg_i = _norm(perusahaan), _norm(perusahaan_induk)
+
+    # Khusus PT Windu: hanya Admin PT Windu sendiri (bukan admin holding / admin global lama)
+    if is_windu_company(peg_c, peg_i):
+        return is_windu_company(company)
+
+    if _norm(session.get("admin_email")) == LEGACY_GLOBAL_ADMIN_EMAIL:
+        return True            # admin global lama (dashboard-nya memang melihat semua PT)
+    if not company:
+        return False
+    if self_is_parent is None:
+        self_is_parent = _is_parent_company(db, company)
+    # sama persis dengan filter cakupan di admin_dashboard / admin_pegawai
+    return (peg_i == company) if self_is_parent else (peg_c == company)
+
+def superadmin_final_gate(tx, admin_companies):
+    """LAYER 2: apakah Superadmin boleh approve final transaksi ini sekarang? -> (boleh, alasan)."""
+    if tx["admin_approved_at"]:
+        return True, ""
+    pc, pi = tx["perusahaan"], tx["perusahaan_induk"]
+    if is_windu_company(pc, pi):
+        return False, "Transaksi PT Windu wajib di-approve Admin PT Windu terlebih dahulu."
+    if company_has_admin(pc, pi, admin_companies):
+        return False, "Menunggu approve Admin PT terlebih dahulu (2 layer approval)."
+    return True, ""            # PT tanpa akun admin: tidak ada layer 1
+
+# ===== Daftar project resmi PT Windu Karya (untuk dropdown "Perusahaan" - anti typo/duplikat) =====
+def can_manage_windu_projects():
+    """Superadmin ATAU Admin yang company-nya persis 'Windu Karya' boleh mendaftarkan project baru."""
+    if session.get("is_superadmin"):
+        return True
+    return is_windu_company(session.get("company"))
+
+def get_windu_projects(db):
+    """Daftar nama project PT Windu Karya, urut A-Z (untuk dropdown)."""
+    rows = db.execute("SELECT nama_project FROM windu_projects ORDER BY LOWER(nama_project) ASC").fetchall()
+    return [r["nama_project"] for r in rows]
+
+def get_windu_project_rows(db):
+    """Daftar {id, nama_project} project PT Windu Karya, urut A-Z (untuk panel kelola/hapus)."""
+    rows = db.execute("SELECT id, nama_project FROM windu_projects ORDER BY LOWER(nama_project) ASC").fetchall()
+    return [{"id": r["id"], "nama_project": r["nama_project"]} for r in rows]
+
+def windu_project_exists(db, nama):
+    return db.execute(
+        "SELECT 1 FROM windu_projects WHERE LOWER(TRIM(nama_project)) = LOWER(TRIM(?)) LIMIT 1", (nama,)
+    ).fetchone() is not None
+
+@bp.post("/admin/windu-projects/add")
+def admin_windu_projects_add():
+    ret = require_admin()
+    if ret: return ret
+    if not can_manage_windu_projects():
+        flash("Hanya Superadmin atau Admin PT Windu Karya yang boleh mendaftarkan project baru.", "error")
+        return redirect(url_for("web.admin_pegawai"))
+
+    db = get_db()
+    nama = (request.form.get("nama_project") or "").strip()
+    if not nama:
+        flash("Nama project wajib diisi.", "error")
+        return redirect(url_for("web.admin_pegawai"))
+    if len(nama) > 255:
+        flash("Nama project terlalu panjang.", "error")
+        return redirect(url_for("web.admin_pegawai"))
+    if is_windu_company(nama):
+        flash('Nama project tidak boleh sama dengan nama perusahaan "Windu Karya".', "error")
+        return redirect(url_for("web.admin_pegawai"))
+    if windu_project_exists(db, nama):
+        flash(f'Project "{nama}" sudah terdaftar (cek juga kemungkinan salah ketik/duplikat).', "error")
+        return redirect(url_for("web.admin_pegawai"))
+
+    who = session.get("admin_name") or session.get("admin_email") or "admin"
+    db.execute(
+        "INSERT INTO windu_projects (nama_project, created_by, created_at) VALUES (?, ?, ?)",
+        (nama, str(who)[:255], datetime.now().isoformat(timespec="seconds")),
+    )
+    db.commit()
+    flash(f'Project "{nama}" berhasil didaftarkan dan bisa langsung dipilih di dropdown.', "success")
+    return redirect(url_for("web.admin_pegawai"))
+
+@bp.post("/admin/windu-projects/<int:proj_id>/delete")
+def admin_windu_projects_delete(proj_id):
+    ret = require_admin()
+    if ret: return ret
+    if not can_manage_windu_projects():
+        flash("Hanya Superadmin atau Admin PT Windu Karya yang boleh menghapus project.", "error")
+        return redirect(url_for("web.admin_pegawai"))
+
+    db = get_db()
+    proj = db.execute("SELECT nama_project FROM windu_projects WHERE id=?", (proj_id,)).fetchone()
+    if not proj:
+        flash("Project tidak ditemukan.", "error")
+        return redirect(url_for("web.admin_pegawai"))
+    in_use = db.execute(
+        "SELECT 1 FROM pegawai WHERE LOWER(TRIM(perusahaan)) = LOWER(TRIM(?)) LIMIT 1",
+        (proj["nama_project"],),
+    ).fetchone()
+    if in_use:
+        flash(f'Project "{proj["nama_project"]}" masih dipakai oleh pegawai aktif, tidak bisa dihapus.', "error")
+        return redirect(url_for("web.admin_pegawai"))
+    db.execute("DELETE FROM windu_projects WHERE id=?", (proj_id,))
+    db.commit()
+    flash(f'Project "{proj["nama_project"]}" dihapus dari daftar.', "info")
+    return redirect(url_for("web.admin_pegawai"))
+
+
+def decorate_pending_tx(db, rows):
+    """Ubah baris antrian on-proses menjadi dict + info tahap approval untuk template.
+    Status approval disegarkan dari DB agar tidak basi walau daftar berasal dari cache 10 detik.
+    Field tambahan: stage, is_windu, admin_can_act, can_final, final_block_reason."""
+    items = [dict(r) for r in rows]
+    if not items:
+        return []
+    ids = [i["id"] for i in items]
+    marks = ",".join("?" * len(ids))
+    fresh = {
+        r["id"]: r for r in db.execute(
+            f"SELECT id, status, admin_approved_at, admin_approved_by FROM transactions WHERE id IN ({marks})",
+            ids,
+        ).fetchall()
+    }
+    admin_companies = load_admin_companies(db)
+    is_super = bool(session.get("is_superadmin"))
+    self_company = (session.get("company") or "").strip()
+    self_is_parent = _is_parent_company(db, self_company) if (self_company and not is_super) else False
+
+    out = []
+    for it in items:
+        f = fresh.get(it["id"])
+        if not f or _norm(f["status"]) != "on-proses":
+            continue                      # sudah diproses orang lain -> jangan tampil lagi
+        it["admin_approved_at"] = f["admin_approved_at"]
+        it["admin_approved_by"] = f["admin_approved_by"]
+        pc = it.get("perusahaan") if it.get("perusahaan") not in (None, "-") else ""
+        pi = it.get("perusahaan_induk") or ""
+        approved = bool(it["admin_approved_at"])
+        it["stage"] = "menunggu_superadmin" if approved else "menunggu_admin"
+        it["is_windu"] = is_windu_company(pc, pi)
+        it["admin_can_act"] = (not approved) and (not is_super) and admin_can_handle(db, pc, pi, self_is_parent)
+        ok, reason = superadmin_final_gate(
+            {"admin_approved_at": it["admin_approved_at"], "perusahaan": pc, "perusahaan_induk": pi},
+            admin_companies,
+        )
+        it["can_final"] = ok
+        it["final_block_reason"] = reason
+        it["has_admin_layer"] = approved or it["is_windu"] or company_has_admin(pc, pi, admin_companies)
+        out.append(it)
+    return out
 
 def current_sim_date():
     try:
@@ -438,7 +752,7 @@ def login():
         # --- 2. Login Admin Biasa dari Database ---
         # Admins table (role_id: 2 for Admin, 1 for Superadmin)
         adm = db.execute(
-            "SELECT id, name, email, password_hash, role, company FROM admins WHERE LOWER(email)=? OR LOWER(name)=?",
+            "SELECT id, name, email, password_hash, role, company, hak_approval FROM admins WHERE LOWER(email)=? OR LOWER(name)=?",
             (email, email),
         ).fetchone()
 
@@ -448,6 +762,9 @@ def login():
             session["admin_name"] = adm["name"]
             session["admin_email"] = adm["email"]
             session["company"] = adm["company"]  # Menyimpan data perusahaan ke session
+            # Hak approve/tolak tarik gaji (LAYER 1) - per-orang, diatur Superadmin di Kelola Admin.
+            # Default 0/OFF kalau kolomnya NULL (baris admin lama sebelum kolom ini ada).
+            session["hak_approval"] = bool(adm["hak_approval"]) if "hak_approval" in adm.keys() else False
 
             role_value = adm["role"] if "role" in adm.keys() else ""
             is_superadmin = str(role_value or "").strip().lower() == "superadmin"
@@ -474,6 +791,13 @@ def login():
             session["admin_name"] = current_app.config["ADMIN_USERNAME"]
             session["admin_email"] = current_app.config["ADMIN_EMAIL"]
             session["company"] = current_app.config.get("ADMIN_COMPANY", "")
+            # Admin dari ENV tidak punya baris di tabel `admins` secara default - cek kalau ada baris
+            # dengan email yang sama supaya hak approval-nya tetap bisa diatur Superadmin lewat Kelola
+            # Admin; kalau tidak ada, default OFF (konsisten dengan admin lain).
+            env_adm = db.execute(
+                "SELECT hak_approval FROM admins WHERE LOWER(email)=?", (email,)
+            ).fetchone()
+            session["hak_approval"] = bool(env_adm["hak_approval"]) if env_adm else False
             flash("Login admin berhasil (ENV).", "success")
             return redirect(url_for("web.admin_dashboard"))
 
@@ -894,7 +1218,7 @@ def tarik_gaji():
         email = (user["email"] or "").strip().lower()
         if email:
             pegawai_rekening = db.execute(
-                """SELECT no_rekening, no_rekening_lain, rekening_ewallet
+                """SELECT id_pegawai, perusahaan, no_rekening, no_rekening_lain, rekening_ewallet
                    FROM pegawai WHERE LOWER(email)=LOWER(?)""",
                 (email,),
             ).fetchone()
@@ -917,6 +1241,7 @@ def tarik_gaji():
             selected_product=product or selected_product,
             rekening_options=rekening_options,
             selected_rekening_key=rekening_key or default_rekening_key,
+            pegawai_info=pegawai_rekening,   # untuk invoice (ID pegawai & perusahaan)
         )
 
     # ---- HARD GATE: akun formal harus aktif sekarang (cek langsung ke DB) ----
@@ -1176,30 +1501,43 @@ def riwayat_view():
 
     at_date = current_sim_date()
     limits_u = compute_limits(int(user["gaji"] or 0), at_date, user["id"])
+    weekly_cutoff = limits_u.get("cutoff_hari") if limits_u.get("cutoff_mingguan") else None
     requested_periode = request.args.get("periode")
-    if not requested_periode or requested_periode == "last-6":
-        mk = at_date.strftime("%Y-%m")
-        selected_periode = "last-6"
+    if weekly_cutoff is not None:
+        current_start = weekly_period_start(at_date, weekly_cutoff)
+        weekly_periods = ["W:" + (current_start - timedelta(days=7 * i)).isoformat() for i in range(6)]
+        last_periods = weekly_periods
+        periode_options = [{"value": "last-6", "label": "6 Periode Mingguan Terakhir"}]
+        periode_options += [{"value": p, "label": format_period_label(p)} for p in weekly_periods]
+        if not requested_periode or requested_periode == "last-6":
+            selected_periode = "last-6"
+            periods_for_query = weekly_periods
+        elif requested_periode in weekly_periods:
+            selected_periode = requested_periode
+            periods_for_query = [requested_periode]
+        else:
+            selected_periode = "last-6"
+            periods_for_query = weekly_periods
+        base_date = current_start
+        mk = weekly_periods[0]
     else:
-        mk = requested_periode
-        selected_periode = mk
-
-    try:
-        base_year, base_month = [int(x) for x in mk.split("-", 1)]
-        base_date = date(base_year, base_month, 1)
-    except Exception:
-        base_date = at_date.replace(day=1)
-        mk = base_date.strftime("%Y-%m")
-        selected_periode = "last-6"
-
-    last_periods = [month_key(add_months(base_date, -i)) for i in range(6)]
-    periode_options = [{"value": "last-6", "label": "6 Periode Terakhir"}]
-    periode_options += [{"value": p, "label": format_period_label(p)} for p in last_periods]
-
-    if selected_periode == "last-6":
-        periods_for_query = last_periods
-    else:
-        periods_for_query = [mk]
+        if not requested_periode or requested_periode == "last-6":
+            mk = at_date.strftime("%Y-%m")
+            selected_periode = "last-6"
+        else:
+            mk = requested_periode
+            selected_periode = mk
+        try:
+            base_year, base_month = [int(x) for x in mk.split("-", 1)]
+            base_date = date(base_year, base_month, 1)
+        except Exception:
+            base_date = at_date.replace(day=1)
+            mk = base_date.strftime("%Y-%m")
+            selected_periode = "last-6"
+        last_periods = [month_key(add_months(base_date, -i)) for i in range(6)]
+        periode_options = [{"value": "last-6", "label": "6 Periode Terakhir"}]
+        periode_options += [{"value": p, "label": format_period_label(p)} for p in last_periods]
+        periods_for_query = last_periods if selected_periode == "last-6" else [mk]
 
     placeholders = ",".join(["?"] * len(periods_for_query))
 
@@ -1220,7 +1558,7 @@ def riwayat_view():
 
     # Penjelasan periode contoh berdasarkan siklus & periode yang dipilih
     a_start = base_date
-    a_end = date(base_date.year, base_date.month, calendar.monthrange(base_date.year, base_date.month)[1])
+    a_end = (base_date + timedelta(days=6)) if weekly_cutoff is not None else date(base_date.year, base_date.month, calendar.monthrange(base_date.year, base_date.month)[1])
     b_start = date(base_date.year, base_date.month, 16)
     b_end = date(add_months(base_date, 1).year, add_months(base_date, 1).month, 15)
 
@@ -1282,13 +1620,8 @@ def admin_dashboard():
     is_super = session.get("is_superadmin") or session.get("role") == "superadmin" or admin_email == "admin@example.com"
     
     # Cek secara live ke database apakah company milik admin bertindak sebagai Perusahaan Induk
-    is_parent = False
-    if admin_company and not is_super:
-        parent_check = db.execute("""
-            SELECT 1 FROM pegawai WHERE LOWER(TRIM(perusahaan_induk)) = LOWER(TRIM(?)) LIMIT 1
-        """, (admin_company,)).fetchone()
-        if parent_check:
-            is_parent = True
+    # PT Windu Karya selalu dianggap induk/holding (lihat _is_parent_company)
+    is_parent = bool(admin_company) and not is_super and _is_parent_company(db, admin_company)
 
     enabled_products = get_enabled_products()
     ppn_enabled = get_ppn_enabled()
@@ -1333,7 +1666,7 @@ def admin_dashboard():
     else:
         cache_company_key = f"LOCAL_{admin_company}"
         
-    cache_key = f"admin_kpi:v5:{cache_company_key}:{s_first}:{s_next}:{periode_key}:{trend_start_key}"
+    cache_key = f"admin_kpi:v6:{cache_company_key}:{s_first}:{s_next}:{periode_key}:{trend_start_key}"
     cached_kpi = get_cache(cache_key)
     
     if cached_kpi:
@@ -1473,7 +1806,7 @@ def admin_dashboard():
 
             pending_reg = db.execute("""
                 SELECT t.id, t.created_at, t.tanggal, t.nominal, t.status, t.product, t.admin_fee, 
-                       p.id_pegawai, COALESCE(u.name, 'Pegawai') AS nama, COALESCE(p.perusahaan, '-') AS perusahaan, 
+                       p.id_pegawai, COALESCE(u.name, 'Pegawai') AS nama, COALESCE(p.perusahaan, '-') AS perusahaan, COALESCE(p.perusahaan_induk, '') AS perusahaan_induk, t.admin_approved_at, t.admin_approved_by, 
                        COALESCE(NULLIF(t.rekening_tujuan,''), p.no_rekening, '') AS no_rekening, 
                        COALESCE(NULLIF(t.rekening_tujuan_label,''), 'No_Rek Bank') AS rekening_tujuan_label, 
                        p.no_telp, p.jabatan 
@@ -1486,7 +1819,7 @@ def admin_dashboard():
 
             pending_urg = db.execute("""
                 SELECT t.id, t.created_at, t.tanggal, t.nominal, t.status, t.product, t.admin_fee, 
-                       p.id_pegawai, COALESCE(u.name, 'Pegawai') AS nama, COALESCE(p.perusahaan, '-') AS perusahaan, 
+                       p.id_pegawai, COALESCE(u.name, 'Pegawai') AS nama, COALESCE(p.perusahaan, '-') AS perusahaan, COALESCE(p.perusahaan_induk, '') AS perusahaan_induk, t.admin_approved_at, t.admin_approved_by, 
                        COALESCE(NULLIF(t.rekening_tujuan,''), p.no_rekening, '') AS no_rekening, 
                        COALESCE(NULLIF(t.rekening_tujuan_label,''), 'No_Rek Bank') AS rekening_tujuan_label, 
                        p.no_telp, p.jabatan 
@@ -1518,7 +1851,7 @@ def admin_dashboard():
 
             pending_reg = db.execute(f"""
                 SELECT t.id, t.created_at, t.tanggal, t.nominal, t.status, t.product, t.admin_fee, 
-                       p.id_pegawai, u.name AS nama, p.perusahaan AS perusahaan, 
+                       p.id_pegawai, u.name AS nama, p.perusahaan AS perusahaan, COALESCE(p.perusahaan_induk, '') AS perusahaan_induk, t.admin_approved_at, t.admin_approved_by, 
                        COALESCE(NULLIF(t.rekening_tujuan,''), p.no_rekening, '') AS no_rekening, 
                        COALESCE(NULLIF(t.rekening_tujuan_label,''), 'No_Rek Bank') AS rekening_tujuan_label, 
                        p.no_telp, p.jabatan 
@@ -1531,7 +1864,7 @@ def admin_dashboard():
 
             pending_urg = db.execute(f"""
                 SELECT t.id, t.created_at, t.tanggal, t.nominal, t.status, t.product, t.admin_fee, 
-                       p.id_pegawai, u.name AS nama, p.perusahaan AS perusahaan, 
+                       p.id_pegawai, u.name AS nama, p.perusahaan AS perusahaan, COALESCE(p.perusahaan_induk, '') AS perusahaan_induk, t.admin_approved_at, t.admin_approved_by, 
                        COALESCE(NULLIF(t.rekening_tujuan,''), p.no_rekening, '') AS no_rekening, 
                        COALESCE(NULLIF(t.rekening_tujuan_label,''), 'No_Rek Bank') AS rekening_tujuan_label, 
                        p.no_telp, p.jabatan 
@@ -1628,9 +1961,18 @@ def admin_dashboard():
         )
 
     # 🎉 Kirim data final yang akurat ke file HTML admin_dashboard.html
+    # ===== 2-LAYER APPROVAL: tandai tahap approval tiap antrian + segarkan dari DB (lepas dari cache 10 dtk) =====
+    pending_reg = decorate_pending_tx(db, pending_reg)
+    pending_urg = decorate_pending_tx(db, pending_urg)
+    pending_count = len(pending_reg) + len(pending_urg)
+    pending_admin_count = sum(1 for t in (pending_reg + pending_urg) if t["stage"] == "menunggu_admin")
+
+    weekly_cutoff_counts = get_weekly_cutoff_counts(db, where_clause, where_params)
     return render_template(
         "admin_dashboard.html",
         recent=recent,
+        enabled_products=enabled_products,
+        pending_admin_count=pending_admin_count,
         transactions=transactions,
         mk=mk,
         account_name=account_name,
@@ -1653,6 +1995,7 @@ def admin_dashboard():
         cycle_b=cycle_b,
         cycle_c=cycle_c,
         cycle_d=cycle_d,
+        weekly_cutoff_counts=weekly_cutoff_counts,
         inactive_count=inactive_count,
         chart_labels=chart_labels,
         chart_values=chart_values,
@@ -1755,13 +2098,8 @@ def admin_riwayat():
     # 💡 DETEKSI ROLE (Copas rumus sakti dari dashboard lu)
     is_super = session.get("is_superadmin") or session.get("role") == "superadmin" or admin_email == "admin@example.com"
     
-    is_parent = False
-    if admin_company and not is_super:
-        parent_check = db.execute("""
-            SELECT 1 FROM pegawai WHERE LOWER(TRIM(perusahaan_induk)) = LOWER(TRIM(?)) LIMIT 1
-        """, (admin_company,)).fetchone()
-        if parent_check:
-            is_parent = True
+    # PT Windu Karya selalu dianggap induk/holding (lihat _is_parent_company)
+    is_parent = bool(admin_company) and not is_super and _is_parent_company(db, admin_company)
 
     # Aturan main skope data filter perusahaan (Rumus dashboard)
     if is_super:
@@ -1779,6 +2117,8 @@ def admin_riwayat():
     q = (request.args.get("q") or "").strip()
     status = (request.args.get("status") or "").strip()
     product = (request.args.get("product") or "").strip()
+    f_company = (request.args.get("company") or "").strip()
+    f_project = (request.args.get("project") or "").strip()
     start_raw = (request.args.get("start") or "").strip()
     end_raw = (request.args.get("end") or "").strip()
 
@@ -1808,7 +2148,8 @@ def admin_riwayat():
         SELECT t.id, t.tanggal, t.periode, t.nominal, t.admin_fee, t.status, t.product,
                t.keterangan, t.created_at,
                u.name AS nama, u.email AS email_user,
-               p.perusahaan AS company, 
+               COALESCE(p.perusahaan_induk, '') AS company,
+               COALESCE(p.perusahaan, '') AS project,
                COALESCE(p.id_pegawai,'') AS id_pegawai,
                COALESCE(p.jabatan,'') AS jabatan,
                COALESCE(NULLIF(t.rekening_tujuan,''), p.no_rekening, '') AS no_rekening,
@@ -1832,6 +2173,13 @@ def admin_riwayat():
         q_like = f"%{q.lower()}%"
         params.extend([q_like, q_like, q_like, q_like, q_like, q_like])
 
+    if is_super and f_company:
+        sql += " AND LOWER(TRIM(COALESCE(p.perusahaan_induk,''))) = ?"
+        params.append(f_company.lower())
+    if f_project:
+        sql += " AND LOWER(TRIM(COALESCE(p.perusahaan,''))) = ?"
+        params.append(f_project.lower())
+
     if status:
         sql += " AND t.status = ?"
         params.append(status)
@@ -1847,6 +2195,16 @@ def admin_riwayat():
     total_nom = sum(int(r["nominal"] or 0) for r in rows if r["status"] == "sukses")
     total_admin = sum(int(r["admin_fee"] or 0) for r in rows if r["status"] == "sukses")
 
+    project_sql = "SELECT DISTINCT TRIM(perusahaan) AS project FROM pegawai WHERE perusahaan IS NOT NULL AND TRIM(perusahaan) <> ''"
+    project_params = []
+    if not is_super and admin_company:
+        project_sql += " AND LOWER(TRIM(perusahaan_induk)) = LOWER(TRIM(?))" if is_parent else " AND LOWER(TRIM(perusahaan)) = LOWER(TRIM(?))"
+        project_params.append(admin_company)
+    elif is_super and f_company:
+        project_sql += " AND LOWER(TRIM(perusahaan_induk)) = LOWER(TRIM(?))"
+        project_params.append(f_company)
+    projects = sorted({r["project"] for r in db.execute(project_sql, project_params).fetchall() if r["project"]})
+
     return render_template(
         "admin_riwayat.html",
         rows=rows,
@@ -1857,6 +2215,10 @@ def admin_riwayat():
         end=end_dt.isoformat(),
         total_nom=total_nom,
         total_admin=total_admin,
+        companies=([admin_company] if not is_super and admin_company else []),
+        projects=projects,
+        f_company=f_company,
+        f_project=f_project,
     )
 
 # =========================================================
@@ -1908,7 +2270,7 @@ def admin_export():
                 "Produk","Nominal","Admin","Status","Keterangan","Dibuat"])
     for r in rows:
         w.writerow([
-            r["id"], r["tanggal"], r["periode"], r["id_pegawai"], r["pegawai"], r["email_user"],
+            r["id"], r["tanggal"], format_period_label(r["periode"]), r["id_pegawai"], r["pegawai"], r["email_user"],
             r["perusahaan"], r["jabatan"], short_rekening_label(r["rekening_tujuan_label"]), r["no_rekening"], r["product"], r["nominal"], r["admin_fee"],
             r["status"], (r["keterangan"] or ""), r["created_at"]
         ])
@@ -2012,6 +2374,14 @@ def admin_pegawai():
                COALESCE(no_telp,'') AS no_telp,
                COALESCE(admin_fee_flat, 15000) AS admin_fee_flat,
                siklus_gaji,
+               COALESCE((SELECT a.cutoff_mingguan_aktif FROM admins a
+                         WHERE LOWER(TRIM(a.company)) = LOWER(TRIM(pegawai.perusahaan_induk))
+                           AND COALESCE(a.cutoff_mingguan_aktif, 0)=1
+                         ORDER BY a.id DESC LIMIT 1), 0) AS cutoff_mingguan_aktif,
+               (SELECT a.cutoff_hari FROM admins a
+                WHERE LOWER(TRIM(a.company)) = LOWER(TRIM(pegawai.perusahaan_induk))
+                  AND COALESCE(a.cutoff_mingguan_aktif, 0)=1
+                ORDER BY a.id DESC LIMIT 1) AS cutoff_hari,
                created_at
         FROM pegawai
         WHERE 1=1
@@ -2023,11 +2393,8 @@ def admin_pegawai():
         # Superadmin bebas melihat semua data tanpa batas
         pass
     elif admin_company:
-        # Cek secara live ke tabel pegawai: Apakah company si admin ini berstatus sebagai 'perusahaan_induk'?
-        is_parent = db.execute("""
-            SELECT 1 FROM pegawai 
-            WHERE LOWER(TRIM(perusahaan_induk)) = LOWER(TRIM(?)) LIMIT 1
-        """, (admin_company,)).fetchone()
+        # Cek secara live: apakah company si admin ini induk/holding? (PT Windu Karya selalu induk)
+        is_parent = _is_parent_company(db, admin_company)
 
         if is_parent:
             # 🏢 JIKA DIA INDUK (Semi-Admin otomatis): Kunci data berdasarkan induknya
@@ -2079,11 +2446,8 @@ def admin_pegawai():
         companies = sorted(list({r["company"].title() for r in company_rows if r.get("company")}))
         
     elif admin_company:
-        # Cek ulang status induk untuk menentukan opsi dropdown
-        is_parent = db.execute("""
-            SELECT 1 FROM pegawai 
-            WHERE LOWER(TRIM(perusahaan_induk)) = LOWER(TRIM(?)) LIMIT 1
-        """, (admin_company,)).fetchone()
+        # Cek ulang status induk untuk menentukan opsi dropdown (PT Windu Karya selalu induk)
+        is_parent = _is_parent_company(db, admin_company)
 
         if is_parent:
             # 🟢 DI SINI FIX-NYA: Kita bungkus pakai LOWER() di SQL biar cakra & Cakra dianggap SAMA
@@ -2103,8 +2467,17 @@ def admin_pegawai():
 
     total_len = len(rows)
 
+    # ===== Dropdown project resmi PT Windu Karya (anti typo/duplikat) =====
+    is_windu_admin = (not is_super) and is_windu_company(admin_company)   # admin yang company-nya persis "Windu Karya"
+    _show_windu_mgmt = is_windu_admin or is_super
+    windu_project_rows = get_windu_project_rows(db) if _show_windu_mgmt else []
+    windu_projects = [p["nama_project"] for p in windu_project_rows]
+
     return render_template("admin_pegawai.html",
-                           rows=rows, q=q, companies=companies, f_company=f_company, total=total_len, is_superadmin=is_super)
+                           rows=rows, q=q, companies=companies, f_company=f_company, total=total_len, is_superadmin=is_super,
+                           is_windu_admin=is_windu_admin, windu_projects=windu_projects,
+                           windu_project_rows=windu_project_rows,
+                           can_manage_windu_projects=can_manage_windu_projects())
 
 @bp.route("/admin/pegawai/add", methods=["POST"], endpoint="admin_pegawai_add")
 def admin_pegawai_add():
@@ -2122,15 +2495,11 @@ def admin_pegawai_add():
     
     # 🗂️ LOGIK MENENTUKAN PERUSAHAAN UTAMA (ANAK PERUSAHAAN)
     if admin_company and not session.get("is_superadmin"):
-        # Jika dia admin lokal PT biasa (bukan induk/holding), isi otomatis dari session-nya
-        # Tapi jika dia admin Induk (seperti GMI), di form dia milih anak perusahaannya lewat form request
-        db_check = get_db()
-        is_parent_check = db_check.execute("""
-            SELECT 1 FROM pegawai WHERE LOWER(TRIM(perusahaan_induk)) = LOWER(TRIM(?)) LIMIT 1
-        """, (admin_company,)).fetchone()
-        
-        if is_parent_check:
-            # Jika adminnya adalah Induk (GMI), nama anak perusahaan diambil dari inputan form layar
+        # Jika dia admin lokal PT biasa (bukan induk/holding), isi otomatis dari session-nya.
+        # Tapi jika dia admin Induk (seperti GMI) atau PT Windu Karya (selalu dianggap induk),
+        # di form dia memilih anak perusahaan/project-nya sendiri.
+        if _is_parent_company(get_db(), admin_company):
+            # Admin Induk (GMI) / PT Windu Karya: nama anak perusahaan/project diambil dari form
             perusahaan = (request.form.get("perusahaan") or "").strip()
         else:
             # Jika admin lokal biasa (Springhill/PT biasa), dipaksa sesuai PT dia sendiri
@@ -2142,20 +2511,19 @@ def admin_pegawai_add():
     # =========================================================================
     # 🟢 DI SINI PROSES BELAKANG LAYAR OTOMATIS: MENENTUKAN PERUSAHAAN INDUK
     # =========================================================================
-    perusahaan_induk = ""
     if admin_company:
-        db_check = get_db()
-        # Cek apakah company milik admin terdaftar sebagai perusahaan induk di database
-        is_parent = db_check.execute("""
-            SELECT 1 FROM pegawai WHERE LOWER(TRIM(perusahaan_induk)) = LOWER(TRIM(?)) LIMIT 1
-        """, (admin_company,)).fetchone()
-        
-        if is_parent:
+        # Cek apakah company admin ini induk/holding (PT Windu Karya selalu induk)
+        if _is_parent_company(get_db(), admin_company):
             # Otomatis stempel perusahaan_induk di belakang layar tanpa muncul di form inputan!
             perusahaan_induk = admin_company.strip()
         else:
             # Jika admin lokal biasa, set sesuai field database jika diperlukan (atau dikosongkan)
             perusahaan_induk = ""
+
+    # Mapping form -> database: Projects disimpan ke perusahaan, Perusahaan ke perusahaan_induk.
+    perusahaan = (request.form.get("perusahaan") or "").strip()
+    perusahaan_induk = ((request.form.get("perusahaan_induk") or "").strip()
+                        if session.get("is_superadmin") else (admin_company or "").strip())
 
     no_rekening = (request.form.get("no_rekening") or "").strip()
     no_rekening_lain = (request.form.get("no_rekening_lain") or "").strip()
@@ -2166,7 +2534,8 @@ def admin_pegawai_add():
     siklus      = normalize_siklus(request.form.get("siklus_gaji"), default="B")
     
     if session.get("is_superadmin"):
-        admin_fee_flat = normalize_admin_fee_flat(request.form.get("admin_fee_flat"), default=15000)
+        # Fee admin WAJIB diinput manual oleh Superadmin (bukan lagi pilihan 15.000 / 17.000)
+        admin_fee_flat = parse_admin_fee_flat(request.form.get("admin_fee_flat"))
     else:
         admin_fee_flat = 15000
 
@@ -2179,9 +2548,20 @@ def admin_pegawai_add():
     if not ewallet_is_valid(rekening_ewallet):
         flash("Rekening e-wallet hanya boleh berisi huruf, angka, dan spasi.", "error")
         return redirect(url_for("web.admin_pegawai"))
+    if admin_fee_flat is None:
+        flash(f"Admin fee wajib diisi manual (angka 0 - {rupiah_format(ADMIN_FEE_FLAT_MAX)}).", "error")
+        return redirect(url_for("web.admin_pegawai"))
 
     db = get_db()
-    
+
+    # Admin PT Windu Karya WAJIB pilih project dari daftar resmi (anti typo/duplikat) - dicek ulang di
+    # server, bukan cuma di dropdown HTML, supaya tidak bisa dilewati lewat request manual.
+    if (not session.get("is_superadmin")) and is_windu_company(admin_company):
+        if not windu_project_exists(db, perusahaan):
+            flash('Perusahaan/project harus dipilih dari daftar resmi PT Windu Karya. '
+                  'Kalau project ini belum ada, daftarkan dulu lewat "Kelola Project Windu Karya".', "error")
+            return redirect(url_for("web.admin_pegawai"))
+
     exists = db.execute(
         "SELECT 1 FROM pegawai WHERE id_pegawai=? OR LOWER(email)=?",
         (id_pegawai, email.lower()),
@@ -2211,6 +2591,289 @@ def admin_pegawai_add():
     return redirect(url_for("web.admin_pegawai"))
 
 
+# =========================================================================================
+# ===== IMPORT PEGAWAI MASSAL LEWAT EXCEL (.xlsx) =====
+# =========================================================================================
+# Urutan kolom template (baris 1 = header, data mulai baris 2):
+#   A. ID Pegawai*        B. Nama*             C. Email*            D. Jabatan
+#   E. Perusahaan/Project F. No Rekening Bank  G. No Rekening Bank 2 H. Rekening E-Wallet
+#   I. No Telp            J. Gaji Pokok        K. Status Aktif      L. Siklus Gaji
+#   M. Admin Fee (khusus Superadmin - diabaikan untuk Admin biasa)
+# Validasi per baris memakai fungsi yang SAMA dengan form Tambah Pegawai manual
+# (employee_id_is_valid, ewallet_is_valid, parse_admin_fee_flat, normalize_siklus,
+# is_windu_company/windu_project_exists, _is_parent_company), supaya aturan bisnis konsisten
+# antara input satu-satu dan import massal.
+IMPORT_MAX_ROWS = 500          # batas baris per file, jaga-jaga dari file raksasa/typo massal
+IMPORT_MAX_FILE_BYTES = 5 * 1024 * 1024   # 5 MB
+IMPORT_STATUS_AKTIF_WORDS = {"1", "aktif", "active", "ya", "yes"}
+IMPORT_STATUS_NONAKTIF_WORDS = {"0", "nonaktif", "tidak aktif", "inactive", "tidak", "no"}
+
+def _import_cell(row, i):
+    """Ambil cell ke-i (0-based) dari tuple baris openpyxl, aman kalau barisnya lebih pendek dari header."""
+    return row[i] if i < len(row) else None
+
+def _import_str(v):
+    return str(v).strip() if v is not None else ""
+
+@bp.get("/admin/pegawai/import/template")
+def admin_pegawai_import_template():
+    """Unduh template Excel kosong (header + 1 contoh baris + petunjuk), disesuaikan dengan
+    konteks admin yang login: kalau Admin PT Windu Karya, kolom Perusahaan dapat dropdown
+    berisi daftar project resmi yang sudah terdaftar."""
+    ret = require_admin()
+    if ret: return ret
+
+    db = get_db()
+    admin_company = session.get("company")
+    is_super = session.get("is_superadmin")
+    is_windu_admin = (not is_super) and is_windu_company(admin_company)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Import Pegawai"
+
+    headers = [
+        "ID Pegawai*", "Nama*", "Email*", "Jabatan", "Perusahaan/Project",
+        "No Rekening Bank Utama", "No Rekening Bank Lain", "Rekening E-Wallet", "No Telp",
+        "Gaji Pokok", "Status Aktif", "Siklus Gaji", "Admin Fee",
+    ]
+    header_fill = PatternFill(start_color="1F2937", end_color="1F2937", fill_type="solid")
+    for col, h in enumerate(headers, start=1):
+        c = ws.cell(row=1, column=col, value=h)
+        c.font = Font(bold=True, color="FFFFFF")
+        c.fill = header_fill
+        c.alignment = Alignment(vertical="center")
+        ws.column_dimensions[c.column_letter].width = max(14, len(h) + 2)
+
+    contoh_perusahaan = ""
+    if is_windu_admin:
+        projects = get_windu_projects(db)
+        contoh_perusahaan = projects[0] if projects else "(daftarkan project dulu)"
+    elif not admin_company or is_super:
+        contoh_perusahaan = "Nama PT/Project"
+
+    contoh = ["EMP001", "Contoh Nama", "contoh@email.com", "Staff", contoh_perusahaan,
+              "1234567890", "", "081234567890", 5000000, "Aktif", "B", ""]
+    for col, v in enumerate(contoh, start=1):
+        ws.cell(row=2, column=col, value=v)
+
+    # Data validation dropdown supaya user tidak salah ketik Status/Siklus (dan Project khusus Windu)
+    dv_status = DataValidation(type="list", formula1='"Aktif,Nonaktif"', allow_blank=True)
+    ws.add_data_validation(dv_status)
+    dv_status.add("K2:K1000")
+
+    dv_siklus = DataValidation(type="list", formula1='"A,B,C,D"', allow_blank=True)
+    ws.add_data_validation(dv_siklus)
+    dv_siklus.add("L2:L1000")
+
+    if is_windu_admin:
+        projects = get_windu_projects(db)
+        if projects:
+            helper = wb.create_sheet("_daftar_project")  # sheet bantu, sumber dropdown
+            for i, p in enumerate(projects, start=1):
+                helper.cell(row=i, column=1, value=p)
+            helper.sheet_state = "hidden"
+            dv_proj = DataValidation(
+                type="list",
+                formula1=f"_daftar_project!$A$1:$A${len(projects)}",
+                allow_blank=True,
+            )
+            ws.add_data_validation(dv_proj)
+            dv_proj.add("E2:E1000")
+
+    catatan = wb.create_sheet("Petunjuk")
+    catatan.column_dimensions["A"].width = 100
+    petunjuk = [
+        "PETUNJUK PENGISIAN TEMPLATE IMPORT PEGAWAI",
+        "",
+        "1. Jangan ubah/hapus baris judul (baris 1) dan jangan ubah urutan kolom.",
+        "2. Baris ke-2 adalah CONTOH - hapus atau timpa dengan data pegawai sungguhan sebelum upload.",
+        "3. Kolom bertanda * (ID Pegawai, Nama, Email) WAJIB diisi.",
+        "4. ID Pegawai: huruf/angka saja, maksimal 16 karakter, harus unik (belum pernah dipakai).",
+        "5. Perusahaan/Project: khusus admin yang mengelola banyak project (holding), wajib diisi "
+        "sesuai daftar resmi. Untuk admin PT biasa, kolom ini boleh dikosongkan (otomatis ikut PT Anda).",
+        "6. Rekening E-Wallet: hanya boleh huruf, angka, dan spasi.",
+        "7. Status Aktif: isi 'Aktif' atau 'Nonaktif' (kosong = dianggap Aktif).",
+        "8. Siklus Gaji: isi salah satu A / B / C / D (kosong = dianggap B).",
+        "9. Admin Fee: HANYA berlaku kalau yang meng-upload adalah Superadmin (angka 0 - 1.000.000, "
+        "boleh pakai titik ribuan mis. 15.000). Kalau yang upload Admin biasa, kolom ini diabaikan.",
+        f"10. Maksimal {IMPORT_MAX_ROWS} baris data per file.",
+        "11. Kalau ada baris yang gagal (format salah / duplikat), baris lain yang valid TETAP masuk - "
+        "sistem akan menampilkan daftar baris mana saja yang gagal & alasannya.",
+    ]
+    if is_windu_admin:
+        petunjuk.insert(5, "   -> Kolom Perusahaan/Project Anda WAJIB pilih dari dropdown (daftar "
+                            "project resmi PT Windu Karya). Project baru harus didaftarkan dulu lewat "
+                            "\"Kelola Project Windu Karya\" sebelum bisa dipakai di file import.")
+    for i, line in enumerate(petunjuk, start=1):
+        cell = catatan.cell(row=i, column=1, value=line)
+        if i == 1:
+            cell.font = Font(bold=True, size=13)
+
+    out_dir = "/tmp/gajiku_import"
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, f"template_import_pegawai_{int(time.time())}.xlsx")
+    wb.save(out_path)
+
+    from flask import send_file
+    return send_file(
+        out_path,
+        as_attachment=True,
+        download_name="Template_Import_Pegawai.xlsx",
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+@bp.post("/admin/pegawai/import")
+def admin_pegawai_import():
+    ret = require_admin()
+    if ret: return ret
+
+    file = request.files.get("file")
+    if not file or not file.filename:
+        flash("Pilih file Excel (.xlsx) terlebih dahulu.", "error")
+        return redirect(url_for("web.admin_pegawai"))
+    if not file.filename.lower().endswith(".xlsx"):
+        flash("Format file harus .xlsx (Excel). Format lain (.xls/.csv) belum didukung.", "error")
+        return redirect(url_for("web.admin_pegawai"))
+
+    file.seek(0, os.SEEK_END)
+    size = file.tell()
+    file.seek(0)
+    if size > IMPORT_MAX_FILE_BYTES:
+        flash(f"Ukuran file maksimal {IMPORT_MAX_FILE_BYTES // (1024*1024)} MB.", "error")
+        return redirect(url_for("web.admin_pegawai"))
+
+    try:
+        wb = load_workbook(file, data_only=True, read_only=True)
+        ws = wb.active
+        raw_rows = list(ws.iter_rows(min_row=2, values_only=True))
+    except Exception:
+        flash("File tidak bisa dibaca. Pastikan formatnya .xlsx yang valid dan tidak corrupt.", "error")
+        return redirect(url_for("web.admin_pegawai"))
+
+    # buang baris yang benar-benar kosong semua (sering muncul di akhir file Excel)
+    rows = [r for r in raw_rows if any(c not in (None, "") for c in r)]
+    if not rows:
+        flash("File tidak berisi data pegawai (cek apakah baris data ada di bawah baris judul).", "error")
+        return redirect(url_for("web.admin_pegawai"))
+    if len(rows) > IMPORT_MAX_ROWS:
+        flash(f"Maksimal {IMPORT_MAX_ROWS} baris per import. File Anda berisi {len(rows)} baris.", "error")
+        return redirect(url_for("web.admin_pegawai"))
+
+    db = get_db()
+    admin_company = session.get("company")
+    is_super = bool(session.get("is_superadmin"))
+    is_parent = _is_parent_company(db, admin_company) if admin_company else False
+    windu_scoped = (not is_super) and is_windu_company(admin_company)
+
+    existing = db.execute("SELECT id_pegawai, email FROM pegawai").fetchall()
+    existing_ids = {(r["id_pegawai"] or "").strip().upper() for r in existing if r["id_pegawai"]}
+    existing_emails = {(r["email"] or "").strip().lower() for r in existing if r["email"]}
+
+    seen_ids, seen_emails = set(), set()
+    valid_rows, errors = [], []
+    now_str = datetime.now().isoformat(timespec="seconds")
+
+    for i, row in enumerate(rows, start=2):   # baris 2 = baris data pertama (baris 1 = header)
+        id_pegawai = normalize_employee_id(_import_str(_import_cell(row, 0)))
+        nama = _import_str(_import_cell(row, 1))
+        email = _import_str(_import_cell(row, 2)).lower()
+        jabatan = _import_str(_import_cell(row, 3))
+        perusahaan_cell = _import_str(_import_cell(row, 4))
+        no_rekening = _import_str(_import_cell(row, 5))
+        no_rekening_lain = _import_str(_import_cell(row, 6))
+        rekening_ewallet = _import_str(_import_cell(row, 7))
+        no_telp = _import_str(_import_cell(row, 8))
+        gaji = parse_int(_import_cell(row, 9), 0)
+        status_raw = _import_str(_import_cell(row, 10)).lower()
+        siklus = normalize_siklus(_import_str(_import_cell(row, 11)) or "B", default="B")
+        fee_raw = _import_cell(row, 12)
+
+        row_errors = []
+
+        if not id_pegawai or not nama or not email:
+            row_errors.append("ID Pegawai/Nama/Email wajib diisi")
+        elif not employee_id_is_valid(id_pegawai):
+            row_errors.append(f"ID Pegawai maksimal {EMPLOYEE_ID_MAX_LEN} karakter alfanumerik")
+        if email and "@" not in email:
+            row_errors.append("Format email tidak valid")
+        if rekening_ewallet and not ewallet_is_valid(rekening_ewallet):
+            row_errors.append("Rekening e-wallet hanya boleh huruf, angka, dan spasi")
+
+        status = 0 if status_raw in IMPORT_STATUS_NONAKTIF_WORDS else 1  # default Aktif kalau kosong/tak dikenali
+
+        # Perusahaan/project - logika sama persis dengan form Tambah Pegawai manual
+        if admin_company and not is_super:
+            if is_parent:
+                perusahaan = perusahaan_cell
+                if not perusahaan:
+                    row_errors.append("Kolom Perusahaan/Project wajib diisi")
+                elif windu_scoped and not windu_project_exists(db, perusahaan):
+                    row_errors.append(f'Project "{perusahaan}" belum terdaftar di daftar resmi PT Windu Karya')
+            else:
+                perusahaan = admin_company.strip()   # dipaksa sesuai PT admin, kolom di file diabaikan
+        else:
+            perusahaan = perusahaan_cell
+            if is_super and not perusahaan:
+                row_errors.append("Kolom Perusahaan wajib diisi")
+        perusahaan_induk = admin_company.strip() if (admin_company and is_parent) else ""
+
+        if is_super:
+            fee_value = parse_admin_fee_flat(fee_raw)
+            if fee_value is None:
+                if fee_raw not in (None, ""):
+                    row_errors.append(f"Admin fee tidak valid (0 - {rupiah_format(ADMIN_FEE_FLAT_MAX)})")
+                fee_value = 15000
+        else:
+            fee_value = 15000   # Admin biasa: kolom Admin Fee di file selalu diabaikan
+
+        id_key = id_pegawai.strip().upper()
+        email_key = email.strip().lower()
+        if id_key and (id_key in existing_ids or id_key in seen_ids):
+            row_errors.append("ID Pegawai duplikat (sudah ada di database atau di baris lain file ini)")
+        if email_key and (email_key in existing_emails or email_key in seen_emails):
+            row_errors.append("Email duplikat (sudah ada di database atau di baris lain file ini)")
+
+        if row_errors:
+            errors.append((i, "; ".join(row_errors)))
+            continue
+
+        seen_ids.add(id_key)
+        seen_emails.add(email_key)
+        valid_rows.append((
+            id_pegawai, nama, email, jabatan, gaji, status, perusahaan, perusahaan_induk,
+            no_rekening, no_rekening_lain, rekening_ewallet, no_telp, siklus, fee_value, now_str,
+        ))
+
+    if valid_rows:
+        db.executemany("""
+            INSERT INTO pegawai (
+                id_pegawai, nama, email, jabatan, gaji, status_aktif,
+                perusahaan, perusahaan_induk, no_rekening, no_rekening_lain,
+                rekening_ewallet, no_telp, siklus_gaji, admin_fee_flat, created_at
+            )
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, valid_rows)
+        db.commit()
+
+    total = len(valid_rows) + len(errors)
+    if valid_rows and not errors:
+        flash(f'Import selesai: {len(valid_rows)} pegawai berhasil ditambahkan.', "success")
+    elif valid_rows and errors:
+        flash(f'Import selesai sebagian: {len(valid_rows)} dari {total} baris berhasil, '
+              f'{len(errors)} baris gagal (detail di bawah).', "warning")
+    else:
+        flash(f'Import gagal total: semua {len(errors)} baris bermasalah, tidak ada yang disimpan.', "error")
+
+    for row_no, msg in errors[:20]:
+        flash(f"Baris {row_no}: {msg}", "error")
+    if len(errors) > 20:
+        flash(f"...dan {len(errors) - 20} baris lain juga gagal (perbaiki lalu upload ulang khusus baris itu).", "error")
+
+    return redirect(url_for("web.admin_pegawai"))
+
+
 @bp.route("/admin/pegawai/<int:pid>/update", methods=["POST"], endpoint="admin_pegawai_update")
 def admin_pegawai_update(pid):
     if not session.get("is_superadmin"):
@@ -2228,13 +2891,9 @@ def admin_pegawai_update(pid):
     
     # 🗂️ LOGIK MENENTUKAN PERUSAHAAN UTAMA (ANAK PERUSAHAAN)
     if admin_company and not session.get("is_superadmin"):
-        # Cek apakah dia admin induk/holding
-        is_parent_check = db.execute("""
-            SELECT 1 FROM pegawai WHERE LOWER(TRIM(perusahaan_induk)) = LOWER(TRIM(?)) LIMIT 1
-        """, (admin_company,)).fetchone()
-        
-        if is_parent_check:
-            # Admin Induk (GMI): Anak perusahaan bebas diubah via form layar
+        # Cek apakah dia admin induk/holding (PT Windu Karya selalu dianggap induk)
+        if _is_parent_company(db, admin_company):
+            # Admin Induk (GMI) / PT Windu Karya: Anak perusahaan/project bebas diubah via form layar
             perusahaan = (request.form.get("perusahaan") or "").strip()
         else:
             # Admin lokal PT biasa: Dipaksa sesuai perusahaan dia sendiri
@@ -2248,12 +2907,8 @@ def admin_pegawai_update(pid):
     # =========================================================================
     perusahaan_induk = ""
     if admin_company and not session.get("is_superadmin"):
-        # Cek status induk admin login
-        is_parent = db.execute("""
-            SELECT 1 FROM pegawai WHERE LOWER(TRIM(perusahaan_induk)) = LOWER(TRIM(?)) LIMIT 1
-        """, (admin_company,)).fetchone()
-        
-        if is_parent:
+        # Cek status induk admin login (PT Windu Karya selalu dianggap induk)
+        if _is_parent_company(db, admin_company):
             perusahaan_induk = admin_company.strip()
     else:
         # 👑 Proteksi Khusus Superadmin: Jika superadmin mengubah data anak perusahaan, 
@@ -2267,6 +2922,11 @@ def admin_pegawai_update(pid):
             if parent_match:
                 perusahaan_induk = parent_match["perusahaan_induk"]
 
+    # Mapping form -> database: Projects disimpan ke perusahaan, Perusahaan ke perusahaan_induk.
+    perusahaan = (request.form.get("perusahaan") or "").strip()
+    perusahaan_induk = ((request.form.get("perusahaan_induk") or "").strip()
+                        if session.get("is_superadmin") else (admin_company or "").strip())
+
     no_rekening = (request.form.get("no_rekening") or "").strip()
     no_rekening_lain = (request.form.get("no_rekening_lain") or "").strip()
     rekening_ewallet = (request.form.get("rekening_ewallet") or "").strip()
@@ -2275,11 +2935,19 @@ def admin_pegawai_update(pid):
     status     = 1 if request.form.get("status") == "1" else 0
     siklus     = normalize_siklus(request.form.get("siklus_gaji"), default="A")
 
+    current_data = db.execute("SELECT admin_fee_flat FROM pegawai WHERE id=?", (pid,)).fetchone()
+    current_fee = current_data["admin_fee_flat"] if current_data and current_data["admin_fee_flat"] is not None else 15000
     if session.get("is_superadmin"):
-        admin_fee_flat = normalize_admin_fee_flat(request.form.get("admin_fee_flat"), default=15000)
+        # Fee admin diinput manual. Kolom kosong -> pertahankan fee sekarang; terisi tapi di luar batas -> error.
+        raw_fee = request.form.get("admin_fee_flat")
+        admin_fee_flat = parse_admin_fee_flat(raw_fee)
+        if admin_fee_flat is None:
+            if (raw_fee or "").strip():
+                flash(f"Admin fee tidak valid (angka 0 - {rupiah_format(ADMIN_FEE_FLAT_MAX)}).", "error")
+                return redirect(url_for("web.admin_pegawai"))
+            admin_fee_flat = current_fee
     else:
-        current_data = db.execute("SELECT admin_fee_flat FROM pegawai WHERE id=?", (pid,)).fetchone()
-        admin_fee_flat = current_data["admin_fee_flat"] if current_data else 15000
+        admin_fee_flat = current_fee
 
     if not id_pegawai:
         flash("ID pegawai wajib diisi.", "error")
@@ -2290,7 +2958,15 @@ def admin_pegawai_update(pid):
     if not ewallet_is_valid(rekening_ewallet):
         flash("Rekening e-wallet hanya boleh berisi huruf, angka, dan spasi.", "error")
         return redirect(url_for("web.admin_pegawai"))
-    
+
+    # Admin PT Windu Karya WAJIB pilih project dari daftar resmi (anti typo/duplikat) - dicek ulang di
+    # server, bukan cuma di dropdown HTML, supaya tidak bisa dilewati lewat request manual.
+    if (not session.get("is_superadmin")) and is_windu_company(admin_company):
+        if not windu_project_exists(db, perusahaan):
+            flash('Perusahaan/project harus dipilih dari daftar resmi PT Windu Karya. '
+                  'Kalau project ini belum ada, daftarkan dulu lewat "Kelola Project Windu Karya".', "error")
+            return redirect(url_for("web.admin_pegawai"))
+
     row = db.execute("SELECT email FROM pegawai WHERE id=?", (pid,)).fetchone()
     old_email = (row["email"] or "").strip().lower() if row else ""
 
@@ -2368,9 +3044,7 @@ def admin_pegawai_delete(pid: int):
             flash("Akses ditolak! Anda tidak memiliki otoritas perusahaan.", "error")
             return redirect(url_for("web.admin_pegawai"))
 
-        is_parent = db.execute("""
-            SELECT 1 FROM pegawai WHERE LOWER(TRIM(perusahaan_induk)) = LOWER(TRIM(?)) LIMIT 1
-        """, (admin_company,)).fetchone()
+        is_parent = _is_parent_company(db, admin_company)
 
         if is_parent:
             if pegawai_induk != admin_company.strip().lower():
@@ -2482,24 +3156,78 @@ def admin_pegawai_delete(pid: int):
 
     return redirect(url_for("web.admin_pegawai"))
 
-# ===== Approve / Reject =====
+# ===== Approve / Reject ADMIN PT (LAYER 1 dari 2-layer approval) =====
+# Approve Admin TIDAK membuat transaksi 'sukses'. Status tetap 'on-proses' dan baru final
+# setelah Superadmin approve (lihat superadmin_tx_approve).
 @bp.post("/admin/tx/<int:txid>/approve")
 def admin_tx_approve(txid):
     ret = require_admin()
     if ret: return ret
+    if session.get("is_superadmin"):
+        # Superadmin tidak boleh "melompati" layer 1 lewat endpoint admin
+        flash("Superadmin melakukan approve final lewat dashboard Superadmin.", "info")
+        return redirect(url_for("web.superadmin_dashboard"))
+    if not session.get("hak_approval"):
+        flash("Anda tidak memiliki hak approval tarik gaji. Hubungi Superadmin untuk mengaktifkannya.", "error")
+        return redirect(url_for("web.admin_dashboard"))
+
     db = get_db()
-    db.execute("UPDATE transactions SET status='sukses' WHERE id=? AND status='on-proses'", (txid,))
+    tx = get_tx_approval_row(db, txid)
+    if not tx:
+        flash("Transaksi tidak ditemukan.", "error")
+        return redirect(url_for("web.admin_dashboard"))
+    if not admin_can_handle(db, tx["perusahaan"], tx["perusahaan_induk"]):
+        flash("Transaksi ini bukan milik perusahaan yang Anda kelola.", "error")
+        return redirect(url_for("web.admin_dashboard"))
+    if _norm(tx["status"]) != "on-proses":
+        flash("Transaksi sudah diproses.", "info")
+        return redirect(url_for("web.admin_dashboard"))
+    if tx["admin_approved_at"]:
+        flash("Transaksi sudah Anda approve. Menunggu approve Superadmin.", "info")
+        return redirect(url_for("web.admin_dashboard"))
+
+    who = session.get("admin_name") or session.get("admin_email") or "admin"
+    db.execute(
+        "UPDATE transactions SET admin_approved_at=?, admin_approved_by=? "
+        "WHERE id=? AND status='on-proses' AND admin_approved_at IS NULL",
+        (datetime.now().isoformat(timespec="seconds"), str(who)[:255], txid),
+    )
     db.commit()
-    flash("Transaksi diset sebagai SUKSES.", "success")
+    clear_cache_prefix("admin_kpi:")
+    flash("Approve Admin berhasil. Menunggu approve Superadmin (transfer).", "success")
     return redirect(url_for("web.admin_dashboard"))
 
 @bp.post("/admin/tx/<int:txid>/reject")
 def admin_tx_reject(txid):
     ret = require_admin()
     if ret: return ret
+    if session.get("is_superadmin"):
+        return superadmin_tx_reject(txid)
+    if not session.get("hak_approval"):
+        flash("Anda tidak memiliki hak approval tarik gaji. Hubungi Superadmin untuk mengaktifkannya.", "error")
+        return redirect(url_for("web.admin_dashboard"))
+
     db = get_db()
-    db.execute("UPDATE transactions SET status='ditolak' WHERE id=? AND status='on-proses'", (txid,))
+    tx = get_tx_approval_row(db, txid)
+    if not tx:
+        flash("Transaksi tidak ditemukan.", "error")
+        return redirect(url_for("web.admin_dashboard"))
+    if not admin_can_handle(db, tx["perusahaan"], tx["perusahaan_induk"]):
+        flash("Transaksi ini bukan milik perusahaan yang Anda kelola.", "error")
+        return redirect(url_for("web.admin_dashboard"))
+    if _norm(tx["status"]) != "on-proses":
+        flash("Transaksi sudah diproses.", "info")
+        return redirect(url_for("web.admin_dashboard"))
+    if tx["admin_approved_at"]:
+        flash("Transaksi sudah Anda approve; penolakan selanjutnya dilakukan oleh Superadmin.", "info")
+        return redirect(url_for("web.admin_dashboard"))
+
+    db.execute(
+        "UPDATE transactions SET status='ditolak' WHERE id=? AND status='on-proses' AND admin_approved_at IS NULL",
+        (txid,),
+    )
     db.commit()
+    clear_cache_prefix("admin_kpi:")
     flash("Transaksi ditolak.", "info")
     return redirect(url_for("web.admin_dashboard"))
 
@@ -2835,7 +3563,7 @@ def superadmin_dashboard():
     pending_reg = db.execute("""
     SELECT t.id, t.created_at, t.tanggal, t.nominal, t.status, t.product, t.admin_fee,
            p.id_pegawai, 
-           COALESCE(u.name, 'Pegawai Tanpa Akun') AS nama, 
+           COALESCE(u.name, 'Pegawai Tanpa Akun') AS nama, t.admin_approved_at, t.admin_approved_by, COALESCE(p.perusahaan_induk, '') AS perusahaan_induk, 
            COALESCE(p.perusahaan, '-') AS perusahaan, 
            COALESCE(NULLIF(t.rekening_tujuan,''), p.no_rekening, '') AS no_rekening,
            COALESCE(NULLIF(t.rekening_tujuan_label,''), 'No_Rek Bank') AS rekening_tujuan_label,
@@ -2855,13 +3583,34 @@ def superadmin_dashboard():
                COALESCE(p.no_telp, '') AS no_telp,
                u.name AS nama,
                COALESCE(p.jabatan, '') AS jabatan,
-               COALESCE(p.perusahaan, '') AS perusahaan
+               COALESCE(p.perusahaan, '') AS perusahaan,
+               COALESCE(p.perusahaan_induk, '') AS perusahaan_induk,
+               t.admin_approved_at, t.admin_approved_by
         FROM transactions t
         LEFT JOIN users u ON u.id = t.user_id
         LEFT JOIN pegawai p ON LOWER(p.email) = LOWER(u.email)
         WHERE t.status='on-proses' AND t.product='urg'
         ORDER BY t.created_at ASC, t.id ASC
     """).fetchall()
+
+    # ===== 2-LAYER APPROVAL: tandai antrian yang sudah / belum di-approve Admin PT =====
+    pending_reg = decorate_pending_tx(db, pending_reg)
+    pending_urg = decorate_pending_tx(db, pending_urg)
+    for t in pending_reg: t["product_label"] = "REG"
+    for t in pending_urg: t["product_label"] = "URG"
+
+    # ===== Modul "Menunggu Transfer": pisahkan yang SUDAH di-approve Admin PT (layer 1 selesai) =====
+    # dari REG/URG On-Proses. Yang belum punya admin approve TAPI memang PT-nya tidak punya admin
+    # ber-hak_approval sama sekali (bypass) TETAP di REG/URG On-Proses dengan tombol Approve aktif -
+    # klik langsung jadi sukses (Superadmin berperan admin+transfer sekaligus untuk PT semacam itu).
+    pending_transfer, still_reg, still_urg = [], [], []
+    for t in pending_reg:
+        (pending_transfer if t["stage"] == "menunggu_superadmin" else still_reg).append(t)
+    for t in pending_urg:
+        (pending_transfer if t["stage"] == "menunggu_superadmin" else still_urg).append(t)
+    pending_reg, pending_urg = still_reg, still_urg
+    pending_transfer.sort(key=lambda t: t.get("admin_approved_at") or t.get("created_at") or t.get("tanggal") or "")
+    pending_admin_wait = sum(1 for t in (pending_reg + pending_urg) if not t["can_final"])
 
     queue_stats = get_queue_stats()
     admin_avatar_url = None
@@ -2885,6 +3634,7 @@ def superadmin_dashboard():
 
     dashboard_template = "superadmin_dashboard.html" if session.get("is_superadmin") else "admin_dashboard.html"
 
+    weekly_cutoff_counts = get_weekly_cutoff_counts(db)
     return render_template(
         dashboard_template,
         mk=mk,
@@ -2898,9 +3648,12 @@ def superadmin_dashboard():
         cycle_b=cycle_b,
         cycle_c=cycle_c,
         cycle_d=cycle_d,
+        weekly_cutoff_counts=weekly_cutoff_counts,
         not_registered=max(total_pegawai - total_register, 0),
         inactive_count=inactive_count,
         pending_count=pending_count,
+        pending_admin_wait=pending_admin_wait,
+        pending_transfer=pending_transfer,
         not_borrowed=not_borrowed,          # <-- sebelumnya kosong; sekarang diisi
         recent=recent,
         pending_reg=pending_reg,
@@ -3018,7 +3771,10 @@ def superadmin_admins():
     f_company = (request.args.get("company") or "").strip()
     
     # Base query admin
-    query = "SELECT id, name, email, company, no_telp, status_aktif FROM admins WHERE 1=1"
+    query = """SELECT id, name, email, company, no_telp, status_aktif, hak_approval,
+                      COALESCE(cutoff_mingguan_aktif, 0) AS cutoff_mingguan_aktif,
+                      COALESCE(cutoff_hari, 2) AS cutoff_hari
+               FROM admins WHERE 1=1"""
     params = []
     
     # Pencarian parsial (Akan mencocokkan kata di tengah seperti 'jarumsuper')
@@ -3068,18 +3824,55 @@ def superadmin_edit_admin(admin_id):
     
     # 💡 Tangkap input status dari select HTML, paksa jadi integer (0 atau 1)
     status_aktif = int(request.form.get("status", 1)) 
+    # Hak approve/tolak tarik gaji (LAYER 1) - checkbox, tidak terkirim sama sekali kalau tidak dicentang
+    hak_approval = 1 if request.form.get("hak_approval") in ("1", "on", "true") else 0
+    cutoff_aktif = 1 if request.form.get("cutoff_mingguan_aktif") in ("1", "on", "true") else 0
+    try:
+        cutoff_hari = int(request.form.get("cutoff_hari", 2))
+    except (TypeError, ValueError):
+        cutoff_hari = 2
+    if cutoff_hari not in range(7):
+        flash("Hari cutoff tidak valid.", "danger")
+        return redirect(url_for("web.superadmin_admins"))
     
     db = get_db()
+
+    # PT Windu Karya wajib selalu ada admin (lihat superadmin_final_gate) - kalau ini admin Windu Karya
+    # SATU-SATUNYA yang hak_approval-nya masih menyala dan mau dimatikan, beri peringatan (tetap boleh
+    # disimpan, sesuai keputusan bisnis - bukan diblokir keras).
+    windu_warning = None
+    if hak_approval == 0 and is_windu_company(company):
+        masih_ada = db.execute("""
+            SELECT COUNT(*) AS c FROM admins
+            WHERE id != ? AND hak_approval = 1
+              AND LOWER(COALESCE(role,'admin')) != 'superadmin'
+              AND LOWER(TRIM(company)) = LOWER(TRIM(?))
+        """, (admin_id, WINDU_COMPANY_NAME)).fetchone()["c"]
+        if masih_ada == 0:
+            windu_warning = ("PERHATIAN: ini admin PT Windu Karya TERAKHIR dengan hak approval. Setelah "
+                              "disimpan, transaksi PT Windu Karya tidak akan bisa diproses sampai ada admin "
+                              "Windu Karya lain yang hak approval-nya diaktifkan (Superadmin tidak bisa "
+                              "menggantikan/bypass untuk PT Windu Karya).")
+
     try:
         # 💡 Tambahkan status_aktif=? ke dalam query UPDATE
         db.execute(
-            "UPDATE admins SET name=?, email=?, company=?, no_telp=?, status_aktif=? WHERE id=?",
-            (name, email, company, no_telp, status_aktif, admin_id)
+            "UPDATE admins SET name=?, email=?, company=?, no_telp=?, status_aktif=?, hak_approval=?, cutoff_mingguan_aktif=?, cutoff_hari=? WHERE id=?",
+            (name, email, company, no_telp, status_aktif, hak_approval, cutoff_aktif, cutoff_hari, admin_id)
         )
+        # Satu company memiliki satu konfigurasi cutoff bersama.
+        db.execute("""
+            UPDATE admins
+            SET cutoff_mingguan_aktif=?, cutoff_hari=?
+            WHERE LOWER(TRIM(company)) = LOWER(TRIM(?))
+        """, (cutoff_aktif, cutoff_hari, company))
         db.commit()
         flash("Data admin berhasil diperbarui!", "success")
+        if windu_warning:
+            flash(windu_warning, "warning")
     except Exception as e:
-        flash(f"Gagal mengupdate admin: {e}", "danger")
+        current_app.logger.exception("Gagal mengupdate admin id=%s", admin_id)
+        flash("Gagal mengupdate admin. Cek log server untuk detail.", "danger")
         
     return redirect(url_for("web.superadmin_admins"))
 
@@ -3113,6 +3906,29 @@ def superadmin_admins_add():
     company = (request.form.get("perusahaan") or "").strip()
     no_telp = (request.form.get("no_telp") or "").strip()
     status_aktif = int(request.form.get("status", 1))
+    # Hak approve/tolak tarik gaji (LAYER 1) - default OFF kalau tidak dicentang, konsisten dgn
+    # kebijakan "semua admin default tidak punya hak approval sampai dinyalakan manual Superadmin".
+    hak_approval = 1 if request.form.get("hak_approval") in ("1", "on", "true") else 0
+    cutoff_aktif = 1 if request.form.get("cutoff_mingguan_aktif") in ("1", "on", "true") else 0
+    try:
+        cutoff_hari = int(request.form.get("cutoff_hari", 2))
+    except (TypeError, ValueError):
+        cutoff_hari = 2
+    if cutoff_hari not in range(7):
+        flash("Hari cutoff tidak valid.", "warning")
+        return redirect(url_for("web.superadmin_admins"))
+
+    # Company hanya boleh memiliki satu konfigurasi cutoff. Jika company sudah
+    # memiliki admin, konfigurasi yang sudah ada menjadi sumber kebenaran.
+    existing_cutoff = db.execute("""
+        SELECT cutoff_mingguan_aktif, cutoff_hari
+        FROM admins
+        WHERE LOWER(TRIM(company)) = LOWER(TRIM(?))
+        ORDER BY id ASC LIMIT 1
+    """, (company,)).fetchone()
+    if existing_cutoff:
+        cutoff_aktif = int(existing_cutoff["cutoff_mingguan_aktif"] or 0)
+        cutoff_hari = int(existing_cutoff["cutoff_hari"] if existing_cutoff["cutoff_hari"] is not None else 2)
 
     if not name or not email or not password:
         flash("Semua field wajib diisi!", "warning")
@@ -3125,17 +3941,16 @@ def superadmin_admins_add():
         # Tambahkan kolom role dan status_aktif ke dalam query INSERT (Sudah fix untuk MariaDB)
         db.execute(
             """
-            INSERT INTO admins (name, email, password_hash, company, no_telp, role, status_aktif, created_at) 
-            VALUES (?, ?, ?, ?, ?, 'admin', 1, NOW())
+            INSERT INTO admins (name, email, password_hash, company, no_telp, role, status_aktif, hak_approval, cutoff_mingguan_aktif, cutoff_hari, created_at) 
+            VALUES (?, ?, ?, ?, ?, 'admin', 1, ?, ?, ?, ?)
             """,
-            (name, email, pw_hash, company, no_telp)
+            (name, email, pw_hash, company, no_telp, hak_approval, cutoff_aktif, cutoff_hari, datetime.now().isoformat(timespec="seconds"))
         )
         db.commit()
         flash(f"Admin baru untuk Perusahaan '{company}' berhasil dibuat!", "success")
     except Exception as e:
-        # Biar lu gak tebak-tebakan, print error aslinya ke terminal Flask lu
-        print("ERROR ADD ADMIN:", str(e)) 
-        flash(f"Gagal menambah admin: {e}", "danger")
+        current_app.logger.exception("Gagal menambah admin")
+        flash("Gagal menambah admin. Cek log server untuk detail.", "danger")
         
     return redirect(url_for("web.superadmin_admins"))
 
@@ -3190,7 +4005,8 @@ def superadmin_riwayat():
         SELECT t.id, t.tanggal, t.periode, t.nominal, t.admin_fee, t.status, t.product,
                t.keterangan, t.created_at,
                u.name AS nama, u.email AS email_user,
-               COALESCE(p.perusahaan, '-') AS company, 
+               COALESCE(p.perusahaan_induk, '-') AS company,
+               COALESCE(p.perusahaan, '') AS project,
                COALESCE(p.id_pegawai,'') AS id_pegawai,
                COALESCE(p.jabatan,'') AS jabatan,
                COALESCE(NULLIF(t.rekening_tujuan,''), p.no_rekening, '') AS no_rekening,
@@ -3204,8 +4020,13 @@ def superadmin_riwayat():
 
     # 5. Pasang dynamic filter tambahan (Dropdown f_company, q pencarian, dll)
     if f_company:
-        sql += " AND LOWER(TRIM(p.perusahaan)) = ?"
+        sql += " AND LOWER(TRIM(p.perusahaan_induk)) = ?"
         params.append(f_company.lower())
+
+    f_project = (request.args.get("project") or "").strip()
+    if f_project:
+        sql += " AND LOWER(TRIM(p.perusahaan)) = ?"
+        params.append(f_project.lower())
 
     if q:
         sql += """ AND (
@@ -3231,15 +4052,12 @@ def superadmin_riwayat():
     # 6. Jalankan Logic List Companies Pilihan Lu
     if is_super:
         company_rows = db.execute("""
-            SELECT DISTINCT LOWER(TRIM(perusahaan)) AS company FROM pegawai 
-            WHERE perusahaan IS NOT NULL AND TRIM(perusahaan) <> ''
+            SELECT DISTINCT LOWER(TRIM(perusahaan_induk)) AS company FROM pegawai
+            WHERE perusahaan_induk IS NOT NULL AND TRIM(perusahaan_induk) <> ''
         """).fetchall()
         companies = sorted(list({r["company"].title() for r in company_rows if r.get("company")}))
     elif admin_company:
-        is_parent = db.execute("""
-            SELECT 1 FROM pegawai 
-            WHERE LOWER(TRIM(perusahaan_induk)) = LOWER(TRIM(?)) LIMIT 1
-        """, (admin_company,)).fetchone()
+        is_parent = _is_parent_company(db, admin_company)  # PT Windu Karya selalu induk
 
         if is_parent:
             company_rows = db.execute("""
@@ -3256,8 +4074,19 @@ def superadmin_riwayat():
     # 7. Eksekusi data ke Database
     rows = db.execute(sql, params).fetchall()
 
+    project_sql = "SELECT DISTINCT TRIM(perusahaan) AS project FROM pegawai WHERE perusahaan IS NOT NULL AND TRIM(perusahaan) <> ''"
+    project_params = []
+    if f_company:
+        project_sql += " AND LOWER(TRIM(perusahaan_induk)) = LOWER(TRIM(?))"
+        project_params.append(f_company)
+    projects = sorted({r["project"] for r in db.execute(project_sql, project_params).fetchall() if r["project"]})
+
     total_nom = sum(int(r["nominal"] or 0) for r in rows if r["status"] == "sukses")
     total_admin = sum(int(r["admin_fee"] or 0) for r in rows if r["status"] == "sukses")
+    total_guixu_fee = sum(
+        8000 for r in rows
+        if f_company.strip().lower() == "guixu"
+    )
 
     return render_template(
         "superadmin_riwayat.html",
@@ -3271,6 +4100,9 @@ def superadmin_riwayat():
         end=end_dt.isoformat(),
         total_nom=total_nom,
         total_admin=total_admin,
+        total_guixu_fee=total_guixu_fee,
+        projects=projects,
+        f_project=f_project,
     )
 
 # =========================================================
@@ -3408,7 +4240,8 @@ def superadmin_export_range():
         flash("Tanggal awal tidak boleh lebih besar dari tanggal akhir.", "error")
         return redirect(url_for("web.superadmin_dashboard"))
 
-    if siklus not in (*VALID_SIKLUS, "ALL"):
+    valid_weekly_filter = siklus.startswith("W") and siklus[1:].isdigit() and int(siklus[1:]) in range(7)
+    if siklus not in (*VALID_SIKLUS, "ALL") and not valid_weekly_filter:
         siklus = "ALL"
 
     def format_ddmmyyyy(raw):
@@ -3461,11 +4294,17 @@ def superadmin_export_range():
           FROM transactions t
           JOIN users u         ON u.id = t.user_id
           LEFT JOIN pegawai p  ON LOWER(p.email) = LOWER(u.email)
+          LEFT JOIN admins a ON LOWER(TRIM(a.company)) = LOWER(TRIM(p.perusahaan_induk))
           WHERE t.tanggal >= ? AND t.tanggal <= ?
     """
     params = [start_dt.isoformat(), end_dt.isoformat()]
 
-    if siklus in VALID_SIKLUS:
+    weekly_siklus = None
+    if siklus.startswith("W") and siklus[1:].isdigit() and int(siklus[1:]) in range(7):
+        weekly_siklus = int(siklus[1:])
+        sql += " AND COALESCE(a.cutoff_mingguan_aktif, 0)=1 AND a.cutoff_hari = ?"
+        params.append(weekly_siklus)
+    elif siklus in VALID_SIKLUS:
         sql += " AND COALESCE(p.siklus_gaji,'A') = ?"
         params.append(siklus)
 
@@ -3483,7 +4322,7 @@ def superadmin_export_range():
                 "Produk","Nominal","Admin","Status","Keterangan","Dibuat"])
     for r in rows:
         w.writerow([
-            r["id"], format_ddmmyyyy(r["tanggal"]), r["periode"], r["id_pegawai"], r["pegawai"], r["email_user"],
+            r["id"], format_ddmmyyyy(r["tanggal"]), format_period_label(r["periode"]), r["id_pegawai"], r["pegawai"], r["email_user"],
             r["perusahaan"], r["jabatan"], short_rekening_label(r["rekening_tujuan_label"]), r["no_rekening"], r["siklus"], r["product"], r["nominal"],
             r["admin_fee"], r["status"], (r["keterangan"] or ""), format_created_at(r["created_at"])
         ])
@@ -3494,7 +4333,7 @@ def superadmin_export_range():
     if company:
         safe_company = company.replace(' ', '_')[:50]
         fname += f"_company_{safe_company}"
-    if siklus in VALID_SIKLUS:
+    if siklus in VALID_SIKLUS or weekly_siklus is not None:
         fname += f"_siklus_{siklus}"
     fname += ".csv"
 
@@ -3505,14 +4344,31 @@ def superadmin_export_range():
     )
 
 
-# ===== Approve/Reject SuperAdmin ======
+# ===== Approve/Reject SuperAdmin (LAYER 2 / FINAL - Superadmin yang melakukan transfer) ======
 @bp.post("/superadmin/tx/<int:txid>/approve")
 def superadmin_tx_approve(txid):
     ret = require_superadmin()
     if ret: return ret
     db = get_db()
-    db.execute("UPDATE transactions SET status='sukses' WHERE id=? AND status='on-proses'", (txid,))
+    tx = get_tx_approval_row(db, txid)
+    if not tx or _norm(tx["status"]) != "on-proses":
+        flash("Transaksi tidak ditemukan atau sudah diproses.", "info")
+        return redirect(url_for("web.superadmin_dashboard"))
+
+    # 2 layer: pastikan layer 1 (Admin PT) sudah approve (PT Windu: selalu wajib)
+    boleh, alasan = superadmin_final_gate(tx, load_admin_companies(db))
+    if not boleh:
+        flash(alasan, "error")
+        return redirect(url_for("web.superadmin_dashboard"))
+
+    who = session.get("admin_name") or session.get("admin_email") or "superadmin"
+    db.execute(
+        "UPDATE transactions SET status='sukses', final_approved_at=?, final_approved_by=? "
+        "WHERE id=? AND status='on-proses'",
+        (datetime.now().isoformat(timespec="seconds"), str(who)[:255], txid),
+    )
     db.commit()
+    clear_cache_prefix("admin_kpi:")
     flash("Transaksi diset sebagai SUKSES.", "success")
     return redirect(url_for("web.superadmin_dashboard"))
 
@@ -3523,6 +4379,7 @@ def superadmin_tx_reject(txid):
     db = get_db()
     db.execute("UPDATE transactions SET status='ditolak' WHERE id=? AND status='on-proses'", (txid,))
     db.commit()
+    clear_cache_prefix("admin_kpi:")
     flash("Transaksi ditolak.", "info")
     return redirect(url_for("web.superadmin_dashboard"))
 

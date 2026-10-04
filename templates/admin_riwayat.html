@@ -19,6 +19,20 @@
       <input type="text" name="q" placeholder="ID pegawai / nama / email / jabatan / perusahaan" value="{{ q or '' }}">
     </div>
     <div>
+      <label>Perusahaan</label>
+      <select name="company" {% if companies %}disabled{% endif %}>
+        {% for c in companies %}<option value="{{ c }}" selected>{{ c }}</option>{% endfor %}
+      </select>
+      {% for c in companies %}<input type="hidden" name="company" value="{{ c }}">{% endfor %}
+    </div>
+    <div>
+      <label>Projects</label>
+      <select name="project">
+        <option value="">- Semua Projects -</option>
+        {% for p in projects %}<option value="{{ p }}" {{ 'selected' if f_project == p else '' }}>{{ p }}</option>{% endfor %}
+      </select>
+    </div>
+    <div>
       <label>Produk</label>
       <select name="product">
         <option value="">- Semua -</option>

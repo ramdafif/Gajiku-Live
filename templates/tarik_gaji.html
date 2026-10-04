@@ -9,6 +9,7 @@
 {% set rekening_options = rekening_options if rekening_options is defined else [] %}
 {% set selected_rekening_key = selected_rekening_key if selected_rekening_key is defined else (rekening_options[0]['key'] if rekening_options else '') %}
 {% set REG_WITHDRAWAL_MAX = REG_WITHDRAWAL_MAX if REG_WITHDRAWAL_MAX is defined else 1000000 %}
+{% set pegawai_info = pegawai_info if pegawai_info is defined else none %}
 
 <section class="card tarik-gaji-card glass">
   <h2>Tarik Gaji</h2>
@@ -42,6 +43,7 @@
           {% for opt in rekening_options %}
             <label class="rekening-option">
               <input type="radio" name="rekening_tujuan_key" value="{{ opt.key }}" required
+                     data-label="{{ opt.label }}" data-value="{{ opt.value }}"
                      {% if opt.key == selected_rekening_key %}checked{% endif %}>
               <span class="rekening-option-card">
                 <span class="rekening-option-icon rekening-option-icon-{{ opt.key|replace('_', '-') }}" aria-hidden="true"></span>
@@ -87,7 +89,7 @@
            placeholder="cth: catatan pengajuan (opsional)">
 
     <div class="form-actions" style="margin-top:12px">
-      <button class="btn" id="btn-ajukan" type="submit" {% if not rekening_options %}disabled{% endif %}>Apply</button>
+      <button class="btn" id="btn-ajukan" type="submit" {% if not rekening_options %}disabled{% endif %}>Lihat Invoice</button>
       <a class="btn btn-outline" href="{{ url_for('web.dashboard', tanggal=at_date.isoformat()) }}">Kembali</a>
     </div>
 
@@ -107,6 +109,53 @@
     </p>
   </form>
 </section>
+
+<!-- ===== INVOICE / DETAIL TRANSAKSI (muncul dulu, baru klik "Tarik Gaji") ===== -->
+<div id="invoiceModal" class="invoice-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="invoiceTitle">
+  <div class="invoice-card">
+    <div class="invoice-head">
+      <h3 id="invoiceTitle">Invoice Tarik Gaji</h3>
+      <span class="badge" id="invProduk"></span>
+    </div>
+    <p class="muted invoice-sub">Periksa detail transaksi berikut, lalu klik <b>Tarik Gaji</b> untuk mengajukan.</p>
+    <div class="invoice-list" id="invoiceRows"></div>
+    <p class="muted invoice-note">Nominal &amp; admin fee final dihitung ulang oleh sistem saat pengajuan diproses.</p>
+    <div class="invoice-actions">
+      <button type="button" class="btn btn-outline" id="invBack">Kembali</button>
+      <button type="button" class="btn" id="invConfirm">Tarik Gaji</button>
+    </div>
+  </div>
+</div>
+
+<style>
+  .invoice-overlay{
+    position:fixed; inset:0; z-index:1000; background:rgba(0,0,0,.55);
+    display:flex; align-items:center; justify-content:center; padding:16px;
+  }
+  .invoice-card{
+    width:min(460px,100%); max-height:92vh; overflow:auto;
+    background:var(--bg2); color:var(--text);
+    border:1px solid var(--border); border-radius:14px; padding:20px;
+    box-shadow:0 18px 50px rgba(0,0,0,.45);
+  }
+  .invoice-head{ display:flex; align-items:center; justify-content:space-between; gap:10px; }
+  .invoice-head h3{ margin:0; }
+  .invoice-sub{ margin:6px 0 12px; font-size:13px; }
+  .invoice-list{ border-top:1px solid var(--border); }
+  .invoice-row{
+    display:flex; justify-content:space-between; gap:14px; padding:8px 0;
+    border-bottom:1px dashed var(--border); font-size:14px;
+  }
+  .invoice-row span:first-child{ color:var(--muted); flex:0 0 42%; }
+  .invoice-row span:last-child{ text-align:right; font-weight:600; word-break:break-word; }
+  .invoice-row.sub span:first-child{ padding-left:12px; }
+  .invoice-row.sub span:last-child{ font-weight:500; }
+  .invoice-row.total{ border-bottom:0; border-top:1px solid var(--border); margin-top:4px; padding-top:12px; font-size:15px; }
+  .invoice-row.total span:first-child{ color:var(--text); font-weight:700; }
+  .invoice-note{ font-size:12px; margin:12px 0 0; }
+  .invoice-actions{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:14px; }
+  .invoice-actions .btn{ width:100%; justify-content:center; text-align:center; }
+</style>
 
 <script>
   // angka dasar dari server
@@ -132,6 +181,30 @@
 
   const HAS_URG = !!document.querySelector('#produk option[value="urg"]');
 
+  // Info pegawai untuk invoice (di-escape oleh tojson, ditampilkan lewat textContent)
+  const INV_INFO = {{ {
+    'nama': user['name'],
+    'id_pegawai': (pegawai_info['id_pegawai'] if pegawai_info else '') or '-',
+    'perusahaan': (pegawai_info['perusahaan'] if pegawai_info else '') or '-',
+    'tanggal': at_date.strftime('%d %b %Y').lstrip('0')
+  }|tojson }};
+
+  // Perhitungan admin fee (dipakai preview di form DAN invoice) - rumus sama dengan server
+  function computeFee(produk, nominal){
+    if (produk === 'urg'){
+      const saldoRegTersedia = Math.max(LIMIT_HARIAN * Math.max(HARI_KE_TODAY, 1) - TOTAL_SUKSES, 0);
+      const regPortion = Math.min(nominal, saldoRegTersedia);
+      const urgPortion = Math.max(nominal - regPortion, 0);
+      const urgDays = LIMIT_HARIAN > 0 ? Math.ceil(urgPortion / LIMIT_HARIAN) : 0;
+      const feeReg = regPortion > 0 ? ADMIN_FEE_REG : 0;
+      const feeUrg = urgDays * ADMIN_FEE_REG;
+      const taxed = addPpn(feeReg + feeUrg);
+      return { produk, saldoRegTersedia, regPortion, urgPortion, urgDays, feeReg, feeUrg, feeBase: feeReg + feeUrg, ppn: taxed.ppn, total: taxed.total };
+    }
+    const taxed = addPpn(ADMIN_FEE_REG);
+    return { produk: 'reg', feeReg: ADMIN_FEE_REG, feeUrg: 0, feeBase: ADMIN_FEE_REG, ppn: taxed.ppn, total: taxed.total };
+  }
+
   function recalcFee(){
     const produkEl = document.getElementById('produk');
     if(!produkEl) return;
@@ -145,17 +218,8 @@
       // Limit URG adil = sisa plafon
       const limitMax = SALDO_PLAFON;
 
-      // Saldo REG tersedia s.d. HARI INI (hak REG)
-      const saldoRegTersedia = Math.max(LIMIT_HARIAN * Math.max(HARI_KE_TODAY, 1) - TOTAL_SUKSES, 0);
-
-      // Split
-      const regPortion = Math.min(nominal, saldoRegTersedia);
-      const urgPortion = Math.max(nominal - regPortion, 0);
-
-      // Fee
-      const feeReg = regPortion > 0 ? ADMIN_FEE_REG : 0;
-      const feeUrg = LIMIT_HARIAN > 0 ? Math.ceil(urgPortion / LIMIT_HARIAN) * ADMIN_FEE_REG : 0;
-      const feeTotal = feeReg + feeUrg;
+      // Saldo REG (hak REG s.d. hari ini), split REG/URG & fee -> lihat computeFee()
+      const { saldoRegTersedia, regPortion, urgPortion, feeReg, feeUrg, feeBase: feeTotal } = computeFee('urg', nominal);
       const feeTaxed = addPpn(feeTotal);
 
       document.getElementById('feePreview').innerHTML =
@@ -177,7 +241,7 @@
         hint.style.display = 'block';
       }
     } else {
-      const feeTaxed = addPpn(ADMIN_FEE_REG);
+      const feeTaxed = computeFee('reg', nominal);
       document.getElementById('feePreview').textContent =
         PPN_ENABLED
           ? `Admin fee (REG): Rp ${idFormat(feeTaxed.total)} (PPN 11%: Rp ${idFormat(feeTaxed.ppn)})`
@@ -190,6 +254,59 @@
       regNotice.style.display = produk === 'reg' ? 'block' : 'none';
       regNotice.classList.toggle('reg-limit-notice--error', produk === 'reg' && nominal > REG_WITHDRAWAL_MAX);
     }
+  }
+
+  // ===== Invoice: tampil dulu sebagai detail transaksi, baru user klik "Tarik Gaji" =====
+  let invoiceConfirmed = false;
+
+  function invRow(label, value, cls){
+    const row = document.createElement('div');
+    row.className = 'invoice-row' + (cls ? ' ' + cls : '');
+    const l = document.createElement('span'); l.textContent = label;
+    const v = document.createElement('span'); v.textContent = value;   // textContent -> aman dari XSS
+    row.appendChild(l); row.appendChild(v);
+    return row;
+  }
+
+  function openInvoice(form){
+    const produk  = document.getElementById('produk')?.value || 'reg';
+    const nominal = sanitizeInt(document.getElementById('nominal').value || 0);
+    const rek     = form.querySelector('input[name="rekening_tujuan_key"]:checked');
+    const ket     = (form.querySelector('input[name="keterangan"]')?.value || '').trim();
+    const fee     = computeFee(produk, nominal);
+    const rp      = (n) => 'Rp ' + idFormat(n);
+
+    const badge = document.getElementById('invProduk');
+    badge.textContent = produk.toUpperCase();
+    badge.className = 'badge badge-' + produk;
+
+    const box = document.getElementById('invoiceRows');
+    box.innerHTML = '';
+    box.appendChild(invRow('Tanggal', INV_INFO.tanggal));
+    box.appendChild(invRow('Nama', INV_INFO.nama));
+    box.appendChild(invRow('ID Pegawai', INV_INFO.id_pegawai));
+    box.appendChild(invRow('Perusahaan', INV_INFO.perusahaan));
+    box.appendChild(invRow('Produk', produk === 'urg' ? 'Tarik Gaji URG' : 'Tarik Gaji REG'));
+    box.appendChild(invRow('Rekening Tujuan', (rek?.dataset.label || '-') + ' - ' + (rek?.dataset.value || '-')));
+    box.appendChild(invRow('Nominal Tarik Gaji', rp(nominal)));
+
+    if (produk === 'urg'){
+      if (fee.feeReg > 0) box.appendChild(invRow('Fee bagian REG', rp(fee.feeReg), 'sub'));
+      box.appendChild(invRow('Fee bagian URG (' + fee.urgDays + ' hari x ' + rp(ADMIN_FEE_REG) + ')', rp(fee.feeUrg), 'sub'));
+    } else {
+      box.appendChild(invRow('Admin fee flat', rp(fee.feeBase), 'sub'));
+    }
+    if (PPN_ENABLED) box.appendChild(invRow('PPN 11%', rp(fee.ppn), 'sub'));
+    box.appendChild(invRow('Total Admin Fee', rp(fee.total), 'total'));
+    if (ket) box.appendChild(invRow('Keterangan', ket));
+
+    const c = document.getElementById('invConfirm');
+    c.disabled = false; c.textContent = 'Tarik Gaji';
+    document.getElementById('invoiceModal').style.display = 'flex';
+  }
+
+  function closeInvoice(){
+    document.getElementById('invoiceModal').style.display = 'none';
   }
 
   function handleSubmitTarikGaji(form){
@@ -205,12 +322,31 @@
       alert('Pilih rekening tujuan');
       return false;
     }
-    if(!confirm('Tarik Gaji?')) return false;
 
+    // Belum dikonfirmasi lewat invoice -> tampilkan invoice dulu, JANGAN kirim form
+    if(!invoiceConfirmed){
+      openInvoice(form);
+      return false;
+    }
+
+    // Sudah klik "Tarik Gaji" di invoice -> kirim
     const btn = document.getElementById('btn-ajukan');
     if(btn){ btn.disabled = true; btn.textContent = 'Memproses…'; }
     return true;
   }
+
+  document.getElementById('invBack')?.addEventListener('click', closeInvoice);
+  document.getElementById('invoiceModal')?.addEventListener('click', (e) => {
+    if(e.target.id === 'invoiceModal') closeInvoice();     // klik area gelap = kembali
+  });
+  document.addEventListener('keydown', (e) => { if(e.key === 'Escape') closeInvoice(); });
+  document.getElementById('invConfirm')?.addEventListener('click', function(){
+    const form = document.querySelector('form[action="{{ url_for('web.tarik_gaji') }}"]');
+    if(!form) return;
+    invoiceConfirmed = true;
+    this.disabled = true; this.textContent = 'Memproses…';    // cegah klik ganda
+    if(form.requestSubmit){ form.requestSubmit(); } else { form.submit(); }
+  });
 
   // init preview saat halaman dibuka & saat produk/nominal berubah
   document.getElementById('produk')?.addEventListener('change', recalcFee);
