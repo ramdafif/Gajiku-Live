@@ -331,13 +331,13 @@ function openEditModal(data){
   .modal {
     position:fixed; inset:0; display:none; align-items:center; justify-content:center;
     background:rgba(0,0,0,.55); z-index:30000;
-    padding:24px 12px; overflow:hidden;
+    padding:24px 12px; overflow-y:auto; overscroll-behavior:contain;
   }
   .modal-skin {
     max-width:760px; width:96%;
     max-height:calc(100vh - 48px);
     max-height:calc(100dvh - 48px);
-    overflow:hidden;
+    overflow-x:hidden; overflow-y:auto; overscroll-behavior:contain;
     background:radial-gradient(120% 140% at 80% -10%, rgba(124,92,255,.12), transparent 60%),
                linear-gradient(180deg, rgba(17,24,48,.98), rgba(10,14,28,.98));
     border:1px solid rgba(255,255,255,.1);

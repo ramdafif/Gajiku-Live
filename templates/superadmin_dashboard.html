@@ -1007,11 +1007,13 @@ document.addEventListener('DOMContentLoaded', () => {
   .modal-overlay{
     position:fixed; inset:0; background:rgba(0,0,0,.55);
     display:none; align-items:center; justify-content:center; padding:16px; z-index:9999;
+    overflow-y:auto; overscroll-behavior:contain;
   }
   .modal-overlay.active{ display:flex; }
   .modal-card{
     width:100%; max-width:520px; background:#0f172a; border:1px solid rgba(255,255,255,.08);
     border-radius:16px; padding:16px; box-shadow:0 20px 60px rgba(0,0,0,.35);
+    max-height:calc(100dvh - 32px); overflow-y:auto; overscroll-behavior:contain;
   }
   .product-check{
     display:flex; align-items:center; gap:10px; margin:10px 0;

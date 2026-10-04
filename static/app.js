@@ -6,6 +6,19 @@ function confirmSubmit(){
   return confirm("Kirim pengajuan tarik gaji sekarang?");
 }
 
+// Kunci scroll halaman saat panel floating apa pun sedang terbuka.
+(function initFloatingPanelScrollLock(){
+  function sync(){
+    var open = Array.from(document.querySelectorAll('.modal, .modal-overlay, .invoice-overlay')).some(function(el){
+      var style = window.getComputedStyle(el);
+      return style.display !== 'none' && style.visibility !== 'hidden';
+    });
+    document.body.classList.toggle('modal-open', open);
+  }
+  sync();
+  new MutationObserver(sync).observe(document.body, {subtree:true, attributes:true, attributeFilter:['class','style','aria-hidden']});
+})();
+
 (function initThemeToggle(){
   const btn = document.getElementById('theme-toggle');
   const label = document.getElementById('theme-toggle-label');
