@@ -6,3 +6,5 @@ pytest
 mysql-connector-python
 python-dotenv
 openpyxl
+defusedxml
+Pillow

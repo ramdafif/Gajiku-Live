@@ -7,6 +7,11 @@ from flask import Blueprint, current_app, render_template, request, redirect, ur
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 import csv, io
+from app.utils.spreadsheets import SafeCSVWriter
+from PIL import Image, ImageOps, UnidentifiedImageError
+import secrets
+import hashlib
+import zipfile
 
 from app import db
 from app.db import get_db
@@ -14,6 +19,11 @@ from app.repositories.user_repo import get_user_by_id, get_user_by_email
 from app.utils.cache import get_cache, set_cache, clear_cache_prefix
 from app.tasks.queue import get_stats as get_queue_stats
 from app.services.email_service import enqueue_email
+from app.services.client_service import client_by_name, employee_assignment, list_clients, list_projects, name_key
+from app.services.security_service import (business_today, credential_version, rate_limit, require_destructive_reset,
+    safe_return_url, serialized_admin_write, serialized_employee_write, serialized_transaction, serialized_withdrawal, token_serializer, withdrawal_key, withdrawal_token)
+from itsdangerous import BadSignature, SignatureExpired
+import hmac
 
 bp = Blueprint("web", __name__)
 
@@ -177,7 +187,7 @@ def compute_limits(gaji: int, at_date: date, user_id: int):
     - Siklus B : mulai tanggal 16
     - Siklus C : gajian 20-21, periode mulai tanggal 21
     - Siklus D : gajian 25-26, periode mulai tanggal 26
-    - REG: sisa harian = (limit_harian * hari_ke) - total_sukses_per_periode_sampai_hari_ini
+    - REG: sisa harian dibatasi plafon dan dikurangi seluruh pinjaman aktif pada periode tersebut
     """
     db = get_db()
 
@@ -208,7 +218,6 @@ def compute_limits(gaji: int, at_date: date, user_id: int):
         hari_ke = day_in_cycle(at_date, siklus)
         mk = period_key_by_cycle(at_date, siklus)
 
-    # Total nominal di periode aktif s.d. hari ini (by email agar duplikat user_id tidak lolos)
     if user_email:
         row = db.execute("""
             SELECT COALESCE(SUM(t.nominal), 0) AS total
@@ -217,8 +226,7 @@ def compute_limits(gaji: int, at_date: date, user_id: int):
             WHERE LOWER(u.email) = LOWER(?)
               AND t.periode = ?
               AND t.status IN ('sukses','on-proses')
-              AND t.tanggal <= ?
-        """, (user_email, mk, ymd(at_date))).fetchone()
+        """, (user_email, mk)).fetchone()
         total_sukses = int(row["total"] if row else 0)
     else:
         row = db.execute("""
@@ -227,12 +235,11 @@ def compute_limits(gaji: int, at_date: date, user_id: int):
             WHERE user_id = ?
               AND periode = ?
               AND status IN ('sukses','on-proses')
-              AND tanggal <= ?
-        """, (user_id, mk, ymd(at_date))).fetchone()
+        """, (user_id, mk)).fetchone()
         total_sukses = int(row["total"] if row else 0)
 
     # Sisa saldo REG (akumulatif harian)
-    saldo = max((limit_harian * hari_ke) - total_sukses, 0)
+    saldo = max(min(limit_harian * hari_ke, plafon) - total_sukses, 0)
     sisa_plafon = max(plafon - total_sukses, 0)
 
     return {
@@ -396,19 +403,15 @@ def is_windu_company(*names):
     return any(_norm(n) == target for n in names)
 
 def _is_parent_company(db, company):
-    """True bila `company` bertindak sebagai perusahaan induk/holding (mengelola beberapa anak
-    perusahaan/project). PT Windu Karya SELALU dianggap induk (walau belum ada satu pun pegawai
-    tersimpan) supaya dropdown project-nya berfungsi sejak awal - lihat WINDU_PROJECTS."""
     company = (company or "").strip()
     if not company:
         return False
-    if is_windu_company(company):
+    if client_by_name(db, company) or is_windu_company(company):
         return True
-    row = db.execute(
-        "SELECT 1 FROM pegawai WHERE LOWER(TRIM(perusahaan_induk)) = LOWER(TRIM(?)) LIMIT 1",
+    return bool(db.execute(
+        "SELECT 1 FROM pegawai WHERE LOWER(TRIM(perusahaan_induk))=LOWER(TRIM(?)) LIMIT 1",
         (company,),
-    ).fetchone()
-    return bool(row)
+    ).fetchone())
 
 def load_admin_companies(db):
     """Kumpulan nama perusahaan (lowercase) yang punya admin dengan HAK APPROVAL menyala (hak_approval=1).
@@ -421,7 +424,7 @@ def load_admin_companies(db):
         FROM admins
         WHERE company IS NOT NULL AND TRIM(company) <> ''
           AND LOWER(COALESCE(role, 'admin')) <> 'superadmin'
-          AND hak_approval = 1
+          AND hak_approval = 1 AND status_aktif = 1
     """).fetchall()
     return {r["company"] for r in rows if r["company"]}
 
@@ -455,8 +458,6 @@ def admin_can_handle(db, perusahaan, perusahaan_induk, self_is_parent=None):
     if is_windu_company(peg_c, peg_i):
         return is_windu_company(company)
 
-    if _norm(session.get("admin_email")) == LEGACY_GLOBAL_ADMIN_EMAIL:
-        return True            # admin global lama (dashboard-nya memang melihat semua PT)
     if not company:
         return False
     if self_is_parent is None:
@@ -475,84 +476,7 @@ def superadmin_final_gate(tx, admin_companies):
         return False, "Menunggu approve Admin PT terlebih dahulu (2 layer approval)."
     return True, ""            # PT tanpa akun admin: tidak ada layer 1
 
-# ===== Daftar project resmi PT Windu Karya (untuk dropdown "Perusahaan" - anti typo/duplikat) =====
-def can_manage_windu_projects():
-    """Superadmin ATAU Admin yang company-nya persis 'Windu Karya' boleh mendaftarkan project baru."""
-    if session.get("is_superadmin"):
-        return True
-    return is_windu_company(session.get("company"))
 
-def get_windu_projects(db):
-    """Daftar nama project PT Windu Karya, urut A-Z (untuk dropdown)."""
-    rows = db.execute("SELECT nama_project FROM windu_projects ORDER BY LOWER(nama_project) ASC").fetchall()
-    return [r["nama_project"] for r in rows]
-
-def get_windu_project_rows(db):
-    """Daftar {id, nama_project} project PT Windu Karya, urut A-Z (untuk panel kelola/hapus)."""
-    rows = db.execute("SELECT id, nama_project FROM windu_projects ORDER BY LOWER(nama_project) ASC").fetchall()
-    return [{"id": r["id"], "nama_project": r["nama_project"]} for r in rows]
-
-def windu_project_exists(db, nama):
-    return db.execute(
-        "SELECT 1 FROM windu_projects WHERE LOWER(TRIM(nama_project)) = LOWER(TRIM(?)) LIMIT 1", (nama,)
-    ).fetchone() is not None
-
-@bp.post("/admin/windu-projects/add")
-def admin_windu_projects_add():
-    ret = require_admin()
-    if ret: return ret
-    if not can_manage_windu_projects():
-        flash("Hanya Superadmin atau Admin PT Windu Karya yang boleh mendaftarkan project baru.", "error")
-        return redirect(url_for("web.admin_pegawai"))
-
-    db = get_db()
-    nama = (request.form.get("nama_project") or "").strip()
-    if not nama:
-        flash("Nama project wajib diisi.", "error")
-        return redirect(url_for("web.admin_pegawai"))
-    if len(nama) > 255:
-        flash("Nama project terlalu panjang.", "error")
-        return redirect(url_for("web.admin_pegawai"))
-    if is_windu_company(nama):
-        flash('Nama project tidak boleh sama dengan nama perusahaan "Windu Karya".', "error")
-        return redirect(url_for("web.admin_pegawai"))
-    if windu_project_exists(db, nama):
-        flash(f'Project "{nama}" sudah terdaftar (cek juga kemungkinan salah ketik/duplikat).', "error")
-        return redirect(url_for("web.admin_pegawai"))
-
-    who = session.get("admin_name") or session.get("admin_email") or "admin"
-    db.execute(
-        "INSERT INTO windu_projects (nama_project, created_by, created_at) VALUES (?, ?, ?)",
-        (nama, str(who)[:255], datetime.now().isoformat(timespec="seconds")),
-    )
-    db.commit()
-    flash(f'Project "{nama}" berhasil didaftarkan dan bisa langsung dipilih di dropdown.', "success")
-    return redirect(url_for("web.admin_pegawai"))
-
-@bp.post("/admin/windu-projects/<int:proj_id>/delete")
-def admin_windu_projects_delete(proj_id):
-    ret = require_admin()
-    if ret: return ret
-    if not can_manage_windu_projects():
-        flash("Hanya Superadmin atau Admin PT Windu Karya yang boleh menghapus project.", "error")
-        return redirect(url_for("web.admin_pegawai"))
-
-    db = get_db()
-    proj = db.execute("SELECT nama_project FROM windu_projects WHERE id=?", (proj_id,)).fetchone()
-    if not proj:
-        flash("Project tidak ditemukan.", "error")
-        return redirect(url_for("web.admin_pegawai"))
-    in_use = db.execute(
-        "SELECT 1 FROM pegawai WHERE LOWER(TRIM(perusahaan)) = LOWER(TRIM(?)) LIMIT 1",
-        (proj["nama_project"],),
-    ).fetchone()
-    if in_use:
-        flash(f'Project "{proj["nama_project"]}" masih dipakai oleh pegawai aktif, tidak bisa dihapus.', "error")
-        return redirect(url_for("web.admin_pegawai"))
-    db.execute("DELETE FROM windu_projects WHERE id=?", (proj_id,))
-    db.commit()
-    flash(f'Project "{proj["nama_project"]}" dihapus dari daftar.', "info")
-    return redirect(url_for("web.admin_pegawai"))
 
 
 def decorate_pending_tx(db, rows):
@@ -599,11 +523,13 @@ def decorate_pending_tx(db, rows):
     return out
 
 def current_sim_date():
+    if not current_app.config.get("ALLOW_DATE_OVERRIDE"):
+        return business_today()
     try:
-        t = request.args.get("tanggal") or session.get("sim_date") or date.today().isoformat()
-        return datetime.strptime(t, "%Y-%m-%d").date()
-    except Exception:
-        return date.today()
+        raw = request.args.get("tanggal") or session.get("sim_date") or business_today().isoformat()
+        return datetime.strptime(raw, "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return business_today()
 
 def get_formal_status():
     """
@@ -615,7 +541,7 @@ def get_formal_status():
         return None
     db = get_db()
     row = db.execute("""
-        SELECT COALESCE(ua.status_aktif, p.status_aktif, 0) AS aktif
+        SELECT CASE WHEN ua.status_aktif=1 AND p.status_aktif=1 THEN 1 ELSE 0 END AS aktif
         FROM user_accounts ua
         JOIN pegawai p ON p.id = ua.pegawai_id
         WHERE ua.email = ?
@@ -624,7 +550,41 @@ def get_formal_status():
     return int(row["aktif"]) if row else None
 
 def password_ok(pw: str) -> bool:
-    return isinstance(pw, str) and len(pw) >= 6
+    return isinstance(pw, str) and 6 <= len(pw) <= 256
+
+def valid_email(value):
+    return isinstance(value, str) and len(value) <= 254 and bool(re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", value))
+
+def admin_coverage_error(db, admin_id, company=None, active=0, approval=0):
+    existing = db.execute("SELECT * FROM admins WHERE id=?", (admin_id,)).fetchone()
+    if not existing or not int(existing["status_aktif"] or 0):
+        return None
+    role = str(existing["role"] or "").strip().lower()
+    if role == "superadmin" and not active:
+        others = db.execute("SELECT COUNT(*) AS total FROM admins WHERE id<>? AND LOWER(role)='superadmin' AND status_aktif=1", (admin_id,)).fetchone()["total"]
+        env_super = current_app.config.get("SUPERADMIN_USERNAME") and current_app.config.get("SUPERADMIN_PASSWORD")
+        if not others and not env_super:
+            return "Superadmin aktif terakhir tidak dapat dihapus/dinonaktifkan. Siapkan akun pengganti terlebih dahulu."
+    if is_windu_company(existing["company"]) and existing["hak_approval"] and not (active and approval and is_windu_company(company)):
+        others = db.execute("""SELECT COUNT(*) AS total FROM admins WHERE id<>? AND status_aktif=1 AND hak_approval=1
+            AND LOWER(COALESCE(role,'admin'))<>'superadmin' AND LOWER(TRIM(company))=?""", (admin_id, name_key(WINDU_COMPANY_NAME))).fetchone()["total"]
+        pending = db.execute("""SELECT 1 FROM transactions t JOIN users u ON u.id=t.user_id
+            JOIN pegawai p ON LOWER(p.email)=LOWER(u.email) WHERE t.status='on-proses' AND t.admin_approved_at IS NULL
+            AND (LOWER(TRIM(p.perusahaan_induk))=? OR LOWER(TRIM(p.perusahaan))=?) LIMIT 1""",
+            (name_key(WINDU_COMPANY_NAME), name_key(WINDU_COMPANY_NAME))).fetchone()
+        if not others and pending:
+            return "Masih ada pengajuan Windu yang menunggu approval. Siapkan admin Windu aktif dengan hak approval sebelum melepas admin terakhir."
+    return None
+
+
+def admin_employee_scope(db, alias="p"):
+    if session.get("is_superadmin"):
+        return "1=1", []
+    company = (session.get("company") or "").strip()
+    if not company:
+        return "1=0", []
+    column = "perusahaan_induk" if _is_parent_company(db, company) else "perusahaan"
+    return f"LOWER(TRIM({alias}.{column})) = ?", [company.lower()]
 
 def format_rupiah(n):
     try:
@@ -634,12 +594,10 @@ def format_rupiah(n):
 
 def apply_ppn(amount: int) -> int:
     """Tambahkan PPN 11% ke admin fee (dibulatkan ke atas)."""
-    try:
-        if not get_ppn_enabled():
-            return int(amount or 0)
-        return int(math.ceil((amount or 0) * 1.11))
-    except Exception:
-        return int(amount or 0)
+    base = int(amount or 0)
+    if not get_ppn_enabled():
+        return base
+    return (base * 111 + 99) // 100
 
 def get_enabled_products():
     db = get_db()
@@ -676,15 +634,17 @@ def get_products_for_company(company):
             enabled.discard("urg")
     return sorted(enabled)
 
+def save_app_setting(key, value):
+    db = get_db()
+    if isinstance(db, sqlite3.Connection):
+        db.execute("INSERT INTO app_settings (`key`, value) VALUES (?,?) ON CONFLICT(`key`) DO UPDATE SET value=excluded.value", (key, value))
+    else:
+        db.execute("INSERT INTO app_settings (`key`, value) VALUES (?,?) ON DUPLICATE KEY UPDATE value=VALUES(value)", (key, value))
+    db.commit()
+
 def set_enabled_products(products):
     value = ",".join(products)
-    db = get_db()
-    db.execute(
-        "INSERT INTO `app_settings` (`key`, `value`) VALUES (%s, %s)"
-        " ON DUPLICATE KEY UPDATE `value` = VALUES(`value`)",
-        ("enabled_products", value),
-    )
-    db.commit()
+    save_app_setting("enabled_products", value)
 
 def get_ppn_enabled() -> bool:
     db = get_db()
@@ -698,13 +658,7 @@ def get_ppn_enabled() -> bool:
 
 def set_ppn_enabled(enabled: bool) -> None:
     value = "1" if enabled else "0"
-    db = get_db()
-    db.execute(
-        "INSERT INTO app_settings (`key`, `value`) VALUES (%s, %s)"
-        " ON DUPLICATE KEY UPDATE `value` = VALUES(`value`)",
-        ("ppn_enabled", value),
-    )
-    db.commit()
+    save_app_setting("ppn_enabled", value)
 
 def get_admin_fee_flat_for_user(user_id: int) -> int:
     default_fee = normalize_admin_fee_flat(current_app.config["ADMIN_FEE"], 15000)
@@ -732,13 +686,7 @@ def get_runtime_force_limit() -> bool:
 
 def set_runtime_force_limit(enabled: bool) -> None:
     value = "1" if enabled else "0"
-    db = get_db()
-    db.execute(
-        "INSERT INTO app_settings (`key`, `value`) VALUES (%s, %s)"
-        " ON DUPLICATE KEY UPDATE `value` = VALUES(`value`)",
-        ("runtime_force_limit", value),
-    )
-    db.commit()
+    save_app_setting("runtime_force_limit", value)
 
 def allowed_avatar(filename: str) -> bool:
     ext = os.path.splitext(filename or "")[1].lower()
@@ -749,6 +697,10 @@ def allowed_avatar(filename: str) -> bool:
 # ===== Routes umum =====
 @bp.route("/")
 def index():
+    if session.get("is_superadmin"):
+        return redirect(url_for("web.superadmin_dashboard"))
+    if session.get("is_admin"):
+        return redirect(url_for("web.admin_dashboard"))
     return redirect(url_for("web.dashboard") if "user_id" in session else url_for("web.login"))
 
 # === LOGIN FORMAL (EMAIL + PASSWORD) + SIMULASI TANGGAL ===
@@ -757,6 +709,9 @@ def login():
     if request.method == "POST":
         email = (request.form.get("email") or "").strip().lower()
         password = request.form.get("password") or ""
+        limited = rate_limit("login", email)
+        if limited:
+            return limited
         db = get_db()
 
         # --- 1. Login Superadmin (Sebelumnya Owner) ---
@@ -766,6 +721,10 @@ def login():
             session.clear()
             session["is_admin"] = True      # Admin biasa dimatikan
             session["is_superadmin"] = True  # Menggantikan peran Owner lama
+            session["auth_source"] = "env_super"
+            session["auth_version"] = credential_version(superadmin_password)
+            session["authenticated_at"] = int(time.time())
+            session.permanent = True
             session["admin_id"] = 0
             session["admin_name"] = "Superadmin"
             session["admin_email"] = superadmin_username
@@ -775,12 +734,19 @@ def login():
         # --- 2. Login Admin Biasa dari Database ---
         # Admins table (role_id: 2 for Admin, 1 for Superadmin)
         adm = db.execute(
-            "SELECT id, name, email, password_hash, role, company, hak_approval FROM admins WHERE LOWER(email)=? OR LOWER(name)=?",
+            "SELECT id, name, email, password_hash, role, company, hak_approval, status_aktif FROM admins WHERE LOWER(email)=? OR LOWER(name)=?",
             (email, email),
         ).fetchone()
 
         if adm and check_password_hash(adm["password_hash"], password):
+            if int(adm["status_aktif"] or 0) != 1:
+                flash("Akun tidak aktif. Hubungi Superadmin.", "error")
+                return render_template("login.html", today=business_today())
             session.clear()
+            session["auth_source"] = "db"
+            session["auth_version"] = credential_version(adm["password_hash"])
+            session["authenticated_at"] = int(time.time())
+            session.permanent = True
             session["admin_id"] = adm["id"]
             session["admin_name"] = adm["name"]
             session["admin_email"] = adm["email"]
@@ -806,10 +772,14 @@ def login():
             str(current_app.config["ADMIN_USERNAME"]).strip().lower(),
             str(current_app.config["ADMIN_EMAIL"]).strip().lower(),
         }
-        if email in valid_ids and password == current_app.config["ADMIN_PASSWORD"]:
+        if not adm and current_app.config["ADMIN_PASSWORD"] and email in valid_ids and password == current_app.config["ADMIN_PASSWORD"]:
             session.clear()
             session["is_admin"] = True
             session["is_superadmin"] = False
+            session["auth_source"] = "env_admin"
+            session["auth_version"] = credential_version(current_app.config["ADMIN_PASSWORD"])
+            session["authenticated_at"] = int(time.time())
+            session.permanent = True
             session["admin_id"] = None
             session["admin_name"] = current_app.config["ADMIN_USERNAME"]
             session["admin_email"] = current_app.config["ADMIN_EMAIL"]
@@ -826,9 +796,9 @@ def login():
 
         # ... (Sisa kode ke bawah untuk login pegawai/user dibiarkan tetap sama)
 
-        today = date.today()
+        today = business_today()
         try:
-            day = int(request.form.get("tanggal") or today.day)
+            day = int(request.form.get("tanggal") or today.day) if current_app.config.get("ALLOW_DATE_OVERRIDE") else today.day
         except ValueError:
             day = today.day
         last_day = calendar.monthrange(today.year, today.month)[1]
@@ -838,7 +808,7 @@ def login():
 
         sim_date = date(today.year, today.month, day).isoformat()
 
-        acc = db.execute("SELECT * FROM user_accounts WHERE email=?", (email,)).fetchone()
+        acc = db.execute("SELECT * FROM user_accounts WHERE LOWER(email)=?", (email,)).fetchone()
         if not acc or not check_password_hash(acc["password_hash"], password):
             flash("Email atau password salah.", "error")
             return render_template("login.html", today=today)
@@ -853,6 +823,19 @@ def login():
             db.execute("UPDATE user_accounts SET status_aktif=? WHERE id=?", (formal_active, acc["id"]))
             db.commit()
 
+        db.commit()
+        if isinstance(db, sqlite3.Connection):
+            db.execute("BEGIN IMMEDIATE")
+        else:
+            db.execute("SELECT id FROM pegawai WHERE id=? FOR UPDATE", (p["id"],)).fetchall()
+        p = db.execute("SELECT * FROM pegawai WHERE id=?", (acc["pegawai_id"],)).fetchone()
+        account_exists = db.execute("SELECT id FROM user_accounts WHERE id=?", (acc["id"],)).fetchone()
+        if not p or not account_exists:
+            db.rollback()
+            flash("Data akun berubah. Silakan login kembali.", "error")
+            return redirect(url_for("web.login"))
+        formal_active = int(p["status_aktif"] or 0)
+        db.execute("UPDATE user_accounts SET status_aktif=? WHERE id=?", (formal_active, acc["id"]))
         name_for_users = p["nama"] or acc["name"]
         existing_user = db.execute("SELECT id FROM users WHERE LOWER(email) = LOWER(?)", (p["email"],)).fetchone()
         
@@ -875,6 +858,10 @@ def login():
         u = get_user_by_email(p["email"])
 
         session.clear()
+        session["auth_source"] = "employee"
+        session["auth_version"] = credential_version(acc["password_hash"])
+        session["authenticated_at"] = int(time.time())
+        session.permanent = True
         session["user_id"] = u["id"]
         session["user_name"] = u["name"]
         session["sim_date"] = sim_date
@@ -886,47 +873,65 @@ def login():
         flash("Login berhasil.", "success")
         return redirect(url_for("web.dashboard", tanggal=sim_date))
 
-    return render_template("login.html", today=date.today())
+    return render_template("login.html", today=business_today())
 
 @bp.route("/forgot", methods=["GET", "POST"])
 def forgot_password():
     if request.method == "POST":
         email = (request.form.get("email") or "").strip().lower()
-        if not email:
-            flash("Masukkan alamat email Anda.", "warning")
-            return redirect(url_for("web.forgot_password"))
-
+        limited = rate_limit("forgot", email, limit=3)
+        if limited:
+            return limited
         db = get_db()
-        
-        # 🔄 FIX 1: Ubah ? menjadi %s untuk MySQL
-        acc = db.execute("SELECT * FROM user_accounts WHERE email=%s", (email,)).fetchone()
-        if not acc:
-            flash("Email tidak terdaftar.", "danger")
-            return redirect(url_for("web.forgot_password"))
-
-        # generate password baru
-        import secrets
-        new_pass = secrets.token_hex(4)  # 8 karakter
-        hash_new = generate_password_hash(new_pass)
-
-        # 🔄 FIX 2: Ubah ? menjadi %s untuk MySQL
-        db.execute("UPDATE user_accounts SET password_hash=%s WHERE id=%s", (hash_new, acc["id"]))
-        
-
-        subj = "[Dana Talangan] Reset Password Akun"
-        
-        # 💡 Catatan: Pastikan kolom di MySQL lu namanya beneran 'name', kalau 'nama' tinggal ganti acc['nama']
-        body = f"Halo {acc['name']},\n\nPassword akun Anda telah direset.\nPassword baru: {new_pass}\n\nSegera login dan ubah password melalui menu Pengaturan."
-        # Panggil langsung tanpa antrean untuk test
-        from app.services.email_service import send_email
-        send_email(subj, body, to_list=[email])
-
-        db.commit()
-
-        flash("Password baru telah dikirim ke email Anda.", "info")
+        account = db.execute("SELECT id, name, email, password_hash FROM user_accounts WHERE LOWER(email)=?", (email,)).fetchone()
+        if account:
+            token = token_serializer("password-reset").dumps({
+                "id": account["id"], "version": credential_version(account["password_hash"]),
+            })
+            reset_path = url_for("web.reset_password", token=token)
+            origin = (current_app.config.get("PUBLIC_BASE_URL") or "").rstrip("/")
+            if origin:
+                from app.services.email_service import send_email
+                body = (f"Halo {account['name']},\n\nUntuk mengganti password, buka tautan berikut (berlaku 30 menit):\n"
+                        f"{origin}{reset_path}\n\nJika bukan Anda yang meminta, abaikan email ini. Password belum diubah.")
+                if not send_email("[GajiKu] Permintaan Ganti Password", body, to_list=[account["email"]]):
+                    current_app.logger.error("Pengiriman tautan reset password gagal")
+            else:
+                current_app.logger.error("PUBLIC_BASE_URL belum dikonfigurasi untuk reset password")
+        flash("Jika email terdaftar, instruksi reset akan dikirim. Periksa email atau hubungi admin jika belum diterima.", "info")
         return redirect(url_for("web.login"))
-
     return render_template("forgot.html")
+
+
+@bp.route("/reset-password/<token>", methods=["GET", "POST"])
+def reset_password(token):
+    db = get_db()
+    try:
+        payload = token_serializer("password-reset").loads(token, max_age=1800)
+        account = db.execute("SELECT id, password_hash FROM user_accounts WHERE id=?", (payload["id"],)).fetchone()
+        if not account or not hmac.compare_digest(payload["version"], credential_version(account["password_hash"])):
+            raise BadSignature("Token sudah digunakan")
+    except (BadSignature, SignatureExpired, KeyError, TypeError):
+        flash("Tautan reset tidak valid, kedaluwarsa, atau sudah digunakan.", "error")
+        return redirect(url_for("web.forgot_password"))
+    if request.method == "POST":
+        limited = rate_limit("reset-password", str(account["id"]), limit=10)
+        if limited:
+            return limited
+        password = request.form.get("new_password") or ""
+        if not password_ok(password) or password != request.form.get("new_password2"):
+            flash("Password minimal 6, maksimal 256 karakter dan konfirmasi harus sama.", "error")
+            return render_template("reset_password.html")
+        cursor = db.execute("UPDATE user_accounts SET password_hash=? WHERE id=? AND password_hash=?",
+                            (generate_password_hash(password), account["id"], account["password_hash"]))
+        db.commit()
+        if cursor.rowcount != 1:
+            flash("Tautan sudah digunakan. Minta tautan reset baru.", "error")
+            return redirect(url_for("web.forgot_password"))
+        session.clear()
+        flash("Password berhasil diganti. Silakan login kembali.", "success")
+        return redirect(url_for("web.login"))
+    return render_template("reset_password.html")
 
 # =========================================================
 # ================ MODUL REGISTER + SIGNIN ================
@@ -939,38 +944,101 @@ def register():
         pw    = request.form.get("password") or ""
         pw2   = request.form.get("password2") or ""
 
-        if not name or not email or not pw or not pw2:
+        limited = rate_limit("register", email, limit=5)
+        if limited:
+            return limited
+        if not name or len(name) > 255 or not valid_email(email) or not pw or not pw2:
             flash("Semua field wajib diisi.", "error"); return render_template("register.html")
-        if len(pw) < 6:
+        if not password_ok(pw):
             flash("Password minimal 6 karakter.", "error"); return render_template("register.html")
         if pw != pw2:
             flash("Konfirmasi password tidak cocok.", "error"); return render_template("register.html")
 
         db = get_db()
-        p = db.execute("SELECT * FROM pegawai WHERE email=?", (email,)).fetchone()
+        p = db.execute("SELECT * FROM pegawai WHERE LOWER(email)=?", (email,)).fetchone()
         if not p:
             flash("Email Anda belum terdaftar di master pegawai. Hubungi Admin/HR.", "error")
             return render_template("register.html")
 
-        exists = db.execute("SELECT 1 FROM user_accounts WHERE email=?", (email,)).fetchone()
+        exists = db.execute("SELECT 1 FROM user_accounts WHERE LOWER(email)=?", (email,)).fetchone()
         if exists:
             flash("Email sudah memiliki akun. Silakan masuk.", "error")
             return redirect(url_for("web.login"))
 
-        status = int(p["status_aktif"] or 0)
-        db.execute("""INSERT INTO user_accounts (pegawai_id, name, email, password_hash, status_aktif, created_at, register_ip, company)
-                      VALUES (?,?,?,?,?,?,?,?)""",
-                   (p["id"], name, email, generate_password_hash(pw), status,
-                    datetime.now().isoformat(timespec="seconds"), request.remote_addr, p["perusahaan"]))
-        db.commit()
-
-        if status == 1:
-            flash("Registrasi berhasil dan akun AKTIF. Silakan masuk.", "success")
+        origin = (current_app.config.get("PUBLIC_BASE_URL") or "").rstrip("/")
+        if not origin:
+            flash("Registrasi belum tersedia. Hubungi admin untuk konfigurasi verifikasi email.", "error")
+            return render_template("register.html")
+        token = secrets.token_urlsafe(32)
+        values = (email, hashlib.sha256(token.encode()).hexdigest(), p["id"], name,
+                  generate_password_hash(pw), int(time.time()) + 1800)
+        if isinstance(db, sqlite3.Connection):
+            db.execute("""INSERT INTO pending_registrations (email,token_hash,pegawai_id,name,password_hash,expires_at)
+                VALUES (?,?,?,?,?,?) ON CONFLICT(email) DO UPDATE SET token_hash=excluded.token_hash,
+                pegawai_id=excluded.pegawai_id,name=excluded.name,password_hash=excluded.password_hash,expires_at=excluded.expires_at""", values)
         else:
-            flash("Registrasi berhasil. Status: menunggu persetujuan admin.", "info")
+            db.execute("""INSERT INTO pending_registrations (email,token_hash,pegawai_id,name,password_hash,expires_at)
+                VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE token_hash=VALUES(token_hash),pegawai_id=VALUES(pegawai_id),
+                name=VALUES(name),password_hash=VALUES(password_hash),expires_at=VALUES(expires_at)""", values)
+        db.execute("DELETE FROM pending_registrations WHERE expires_at < ?", (int(time.time()),))
+        db.commit()
+        from app.services.email_service import send_email
+        verification_url = origin + url_for("web.verify_registration", token=token)
+        body = f"Halo {name},\n\nVerifikasi email untuk mengaktifkan registrasi GajiKu (berlaku 30 menit):\n{verification_url}\n\nJika bukan Anda yang mendaftar, abaikan email ini."
+        if send_email("[GajiKu] Verifikasi Registrasi", body, to_list=[email]):
+            flash("Periksa email untuk menyelesaikan registrasi. Akun belum dibuat sebelum email diverifikasi.", "success")
+        else:
+            flash("Email verifikasi belum berhasil dikirim. Coba kembali atau hubungi admin.", "error")
         return redirect(url_for("web.login"))
 
     return render_template("register.html")
+
+@bp.route("/verify-registration/<token>", methods=["GET", "POST"])
+def verify_registration(token):
+    if len(token) > 128:
+        return ("Tautan tidak valid.", 400)
+    db = get_db()
+    pending = db.execute("SELECT * FROM pending_registrations WHERE token_hash=? AND expires_at>?",
+                         (hashlib.sha256(token.encode()).hexdigest(), int(time.time()))).fetchone()
+    if not pending:
+        flash("Tautan verifikasi kedaluwarsa atau sudah digunakan. Silakan daftar kembali.", "error")
+        return redirect(url_for("web.register"))
+    if request.method == "POST":
+        limited = rate_limit("verify-registration", pending["email"], limit=10)
+        if limited:
+            return limited
+        db.commit()
+        if isinstance(db, sqlite3.Connection):
+            db.execute("BEGIN IMMEDIATE")
+        lock = "" if isinstance(db, sqlite3.Connection) else " FOR UPDATE"
+        pending = db.execute("SELECT * FROM pending_registrations WHERE token_hash=? AND expires_at>?" + lock,
+                             (hashlib.sha256(token.encode()).hexdigest(), int(time.time()))).fetchone()
+        if not pending:
+            db.rollback()
+            flash("Tautan verifikasi kedaluwarsa atau sudah diganti. Silakan daftar kembali.", "error")
+            return redirect(url_for("web.register"))
+        employee = db.execute("SELECT * FROM pegawai WHERE id=? AND LOWER(email)=?" + lock,
+                              (pending["pegawai_id"], pending["email"])).fetchone()
+        if not employee:
+            db.rollback()
+            flash("Data pegawai berubah. Hubungi admin sebelum registrasi kembali.", "error")
+            return redirect(url_for("web.register"))
+        try:
+            db.execute("""INSERT INTO user_accounts
+                (pegawai_id,name,email,password_hash,status_aktif,created_at,register_ip,company)
+                VALUES (?,?,?,?,?,?,?,?)""", (employee["id"],pending["name"],pending["email"],pending["password_hash"],
+                int(employee["status_aktif"] or 0),datetime.now().isoformat(timespec="seconds"),request.remote_addr,employee["perusahaan"]))
+            db.execute("DELETE FROM pending_registrations WHERE email=? AND token_hash=?", (pending["email"],pending["token_hash"]))
+            db.commit()
+        except Exception as error:
+            db.rollback()
+            if not isinstance(error, sqlite3.IntegrityError) and getattr(error, "errno", None) != 1062:
+                raise
+            flash("Akun sudah terdaftar. Silakan login atau gunakan lupa password.", "info")
+            return redirect(url_for("web.login"))
+        flash("Email terverifikasi. Silakan login; status aktif mengikuti persetujuan admin.", "success")
+        return redirect(url_for("web.login"))
+    return render_template("verify_registration.html", email=pending["email"])
 
 @bp.post("/logout")
 def logout():
@@ -984,25 +1052,48 @@ def avatar_upload():
         flash("Silakan login terlebih dahulu.", "error")
         return redirect(url_for("web.login"))
 
+    limited = rate_limit("avatar", str(session.get("admin_id") or session.get("user_id") or session.get("admin_email")), limit=10, window=60)
+    if limited:
+        return limited
     file = request.files.get("avatar")
     if not file or not file.filename:
         flash("Pilih file gambar terlebih dahulu.", "error")
-        return redirect(request.referrer or url_for("web.dashboard"))
+        return redirect(safe_return_url("web.dashboard"))
 
     filename = secure_filename(file.filename)
     if not filename or not allowed_avatar(filename):
         flash("Format gambar tidak didukung.", "error")
-        return redirect(request.referrer or url_for("web.dashboard"))
+        return redirect(safe_return_url("web.dashboard"))
 
     ext = os.path.splitext(filename)[1].lower()
-    stamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    content = file.stream.read(2 * 1024 * 1024 + 1)
+    if len(content) > 2 * 1024 * 1024:
+        flash("Avatar maksimal 2 MB.", "error")
+        return redirect(safe_return_url("web.dashboard"))
+    try:
+        image = Image.open(io.BytesIO(content))
+        expected = {".png": "PNG", ".jpg": "JPEG", ".jpeg": "JPEG", ".gif": "GIF", ".webp": "WEBP"}[ext]
+        if image.format != expected or image.width * image.height > 16_000_000:
+            raise ValueError("Gambar tidak valid")
+        image.verify()
+        image = ImageOps.exif_transpose(Image.open(io.BytesIO(content)))
+        image.thumbnail((1024, 1024))
+        if expected == "JPEG":
+            image = image.convert("RGB")
+        encoded = io.BytesIO()
+        image.save(encoded, format=expected)
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
+        flash("File bukan gambar yang valid atau dimensinya terlalu besar.", "error")
+        return redirect(safe_return_url("web.dashboard"))
+    stamp = secrets.token_hex(16)
     superadmin_id = session.get("admin_id") if session.get("is_admin") else session.get("user_id")
     superadmin_prefix = "admin" if session.get("is_admin") else "user"
     safe_name = f"{superadmin_prefix}_{superadmin_id or 'env'}_{stamp}{ext}"
 
     upload_dir = os.path.join(current_app.static_folder, "uploads", "avatars")
     os.makedirs(upload_dir, exist_ok=True)
-    file.save(os.path.join(upload_dir, safe_name))
+    with open(os.path.join(upload_dir, safe_name), "wb") as avatar_file:
+        avatar_file.write(encoded.getvalue())
     rel_path = f"uploads/avatars/{safe_name}"
 
     db = get_db()
@@ -1013,7 +1104,7 @@ def avatar_upload():
             db.execute("UPDATE admins SET avatar_path=? WHERE LOWER(email)=?", (rel_path, session["admin_email"].lower()))
         db.commit()
         flash("Avatar admin diperbarui.", "success")
-        return redirect(url_for("web.admin_dashboard"))
+        return redirect(url_for("web.superadmin_dashboard" if session.get("is_superadmin") else "web.admin_dashboard"))
 
     email = (session.get("formal_email") or "").strip().lower()
     if not email:
@@ -1023,7 +1114,7 @@ def avatar_upload():
         db.execute("UPDATE user_accounts SET avatar_path=? WHERE LOWER(email)=?", (rel_path, email))
         db.commit()
     flash("Avatar diperbarui.", "success")
-    return redirect(request.referrer or url_for("web.dashboard"))
+    return redirect(safe_return_url("web.dashboard"))
 
 @bp.post("/avatar/delete")
 def avatar_delete():
@@ -1039,7 +1130,7 @@ def avatar_delete():
             db.execute("UPDATE admins SET avatar_path='' WHERE LOWER(email)=?", (session["admin_email"].lower(),))
         db.commit()
         flash("Avatar admin dihapus.", "success")
-        return redirect(request.referrer or url_for("web.admin_dashboard"))
+        return redirect(safe_return_url("web.admin_dashboard"))
 
     email = (session.get("formal_email") or "").strip().lower()
     if not email:
@@ -1049,7 +1140,7 @@ def avatar_delete():
         db.execute("UPDATE user_accounts SET avatar_path='' WHERE LOWER(email)=?", (email,))
         db.commit()
     flash("Avatar dihapus.", "success")
-    return redirect(request.referrer or url_for("web.dashboard"))
+    return redirect(safe_return_url("web.dashboard"))
 
 # ===== DASHBOARD USER =====
 @bp.route("/dashboard")
@@ -1076,7 +1167,7 @@ def dashboard():
 
     rows = db.execute(
         """SELECT t.id, t.tanggal, t.nominal, t.admin_fee, t.status, t.product, t.created_at,
-                  t.keterangan, t.cancel_until,
+                  t.keterangan, t.cancel_until, t.admin_approved_at,
                   COALESCE(NULLIF(t.rekening_tujuan,''), p.no_rekening, '') AS no_rekening,
                   COALESCE(NULLIF(t.rekening_tujuan_label,''), 'No_Rek Bank') AS rekening_tujuan_label,
                   COALESCE(p.no_telp,'') AS no_telp
@@ -1109,9 +1200,9 @@ def dashboard():
     remaining_map = {}
     for r in rows:
         remaining = 0
-        if r["status"] == "on-proses" and r["cancel_until"]:
+        if r["status"] == "on-proses" and not r["admin_approved_at"] and r["cancel_until"]:
             try:
-                cu = datetime.fromisoformat(r["cancel_until"])
+                cu = datetime.fromisoformat(str(r["cancel_until"]))
                 delta = (cu - now).total_seconds()
                 remaining = int(delta) if delta > 0 else 0
             except Exception:
@@ -1210,8 +1301,15 @@ def settings_account():
             flash("Konfirmasi password baru tidak cocok.", "error")
             return render_template("settings.html")
 
-        db.execute("UPDATE user_accounts SET password_hash=? WHERE id=?", (generate_password_hash(new_pw), acc["id"]))
+        new_hash = generate_password_hash(new_pw)
+        cursor = db.execute("UPDATE user_accounts SET password_hash=? WHERE id=? AND password_hash=?",
+                            (new_hash, acc["id"], acc["password_hash"]))
         db.commit()
+        if cursor.rowcount != 1:
+            session.clear()
+            flash("Password akun berubah saat diproses. Silakan login kembali.", "error")
+            return redirect(url_for("web.login"))
+        session["auth_version"] = credential_version(new_hash)
         flash("Password berhasil diperbarui.", "success")
         return redirect(url_for("web.dashboard"))
 
@@ -1222,6 +1320,7 @@ def settings_account():
 # ===================== PENCAIRAN =========================
 # =========================================================
 @bp.route("/tarik-gaji", methods=["GET", "POST"])
+@serialized_withdrawal
 def tarik_gaji():
     if "user_id" not in session:
         flash("Silakan login terlebih dahulu.", "error")
@@ -1232,6 +1331,9 @@ def tarik_gaji():
     ppn_enabled = get_ppn_enabled()
     db      = get_db()
     user    = get_user_by_id(session["user_id"])
+    if not user:
+        session.clear()
+        return redirect(url_for("web.login"))
     at_date = current_sim_date() # Tanggal simulasi bawaan sistem
     limits  = compute_limits(int(user["gaji"] or 0), at_date, user["id"])
     pegawai_company = ""
@@ -1270,12 +1372,13 @@ def tarik_gaji():
             selected_product=product or selected_product,
             rekening_options=rekening_options,
             selected_rekening_key=rekening_key or default_rekening_key,
+            request_token=withdrawal_token(),
             pegawai_info=pegawai_rekening,   # untuk invoice (ID pegawai & perusahaan)
         )
 
     # ---- HARD GATE: akun formal harus aktif sekarang (cek langsung ke DB) ----
     fresh_active = get_formal_status()
-    if fresh_active == 0:  # non-aktif
+    if fresh_active != 1:
         session["formal_active"] = 0
         flash("Akun Anda belum diaktifkan admin. Pengajuan tarik gaji terkunci.", "error")
         return redirect(url_for("web.dashboard", tanggal=at_date.isoformat()))
@@ -1284,10 +1387,9 @@ def tarik_gaji():
 
     # ===================== POST =====================
     if request.method == "POST":
-        print("=== DEBUG: REQUEST POST MASUK KE BACKEND ===")
         # 🟢 FIX TANGGAL: Ambil acuan bulan/tahun dari AT_DATE simulasi, bukan kalender real server
         try:
-            day = int(request.form.get("tanggal") or at_date.day)
+            day = int(request.form.get("tanggal") or at_date.day) if current_app.config.get("ALLOW_DATE_OVERRIDE") else at_date.day
         except ValueError:
             day = at_date.day
             
@@ -1314,8 +1416,8 @@ def tarik_gaji():
         
         # 🟢 FIX NOMINAL: Buang paksa semua titik ribuan rupiah sebelum diparse ke Integer
         nominal_raw = request.form.get("nominal") or "0"
-        nominal_clean = "".join(filter(str.isdigit, nominal_raw))
-        nominal = int(nominal_clean) if nominal_clean else 0
+        nominal_clean = re.sub(r"[.,\s]", "", nominal_raw)
+        nominal = int(nominal_clean) if re.fullmatch(r"[0-9]{1,10}", nominal_clean) else 0
         
         ket     = (request.form.get("keterangan") or "").strip()
         urg_lock_until = None  
@@ -1392,8 +1494,8 @@ def tarik_gaji():
         # --- Simpan transaksi on-proses ---
         db.execute("""
             INSERT INTO transactions
-            (user_id, tanggal, periode, nominal, admin_fee, status, keterangan, rekening_tujuan, rekening_tujuan_label, created_at, product, cancel_until, urg_lock_until)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            (user_id, tanggal, periode, nominal, admin_fee, status, keterangan, rekening_tujuan, rekening_tujuan_label, created_at, product, cancel_until, urg_lock_until, request_key)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             user["id"],
             at_day.isoformat(),
@@ -1407,7 +1509,8 @@ def tarik_gaji():
             datetime.now().isoformat(timespec="seconds"),
             produk,
             cancel_until,
-            urg_lock_until
+            urg_lock_until,
+            withdrawal_key(request.form.get("request_token")),
         ))
         db.commit()
 
@@ -1448,27 +1551,37 @@ def tarik_gaji():
 # Redirect URL lama agar tidak memutus link yang sudah ada
 @bp.route("/pencairan", methods=["GET", "POST"])
 def pencairan_redirect():
-    return redirect(url_for("web.tarik_gaji", **request.args))
+    return redirect(url_for("web.tarik_gaji", **request.args), code=307 if request.method == "POST" else 302)
 
 
 
 # ===== Pembatalan user (selama belum di-approve admin) =====
 @bp.post("/tx/<int:txid>/cancel")
+@serialized_transaction
 def tx_cancel(txid):
     if "user_id" not in session:
         flash("Silakan login.", "error")
         return redirect(url_for("web.login"))
     db = get_db()
-    row = db.execute("SELECT id, user_id, status, cancel_until FROM transactions WHERE id=?", (txid,)).fetchone()
-    if not row or row["user_id"] != session["user_id"]:
+    row = db.execute("SELECT id, user_id, status, cancel_until, admin_approved_at FROM transactions WHERE id=? AND user_id=?",
+                     (txid, session["user_id"])).fetchone()
+    if not row:
         flash("Transaksi tidak ditemukan.", "error")
         return redirect(url_for("web.dashboard"))
-    if row["status"] != "on-proses":
-        flash("Transaksi sudah diproses admin.", "info")
+    try:
+        deadline = datetime.fromisoformat(str(row["cancel_until"]))
+        now = datetime.now(deadline.tzinfo) if deadline.tzinfo else datetime.now()
+    except (TypeError, ValueError):
+        deadline, now = None, datetime.now()
+    if _norm(row["status"]) != "on-proses" or row["admin_approved_at"] or not deadline or deadline <= now:
+        flash("Batas pembatalan berakhir atau transaksi sudah diproses admin.", "info")
         return redirect(url_for("web.dashboard"))
-    db.execute("UPDATE transactions SET status='dibatalkan' WHERE id=?", (txid,))
+    cursor = db.execute("""UPDATE transactions SET status='dibatalkan'
+        WHERE id=? AND user_id=? AND status='on-proses' AND admin_approved_at IS NULL AND cancel_until > ?""",
+        (txid, session["user_id"], now.isoformat(timespec="seconds")))
     db.commit()
-    flash("Transaksi dibatalkan.", "info")
+    clear_cache_prefix("admin_kpi:")
+    flash("Transaksi dibatalkan." if cursor.rowcount == 1 else "Transaksi sudah diproses admin.", "info")
     return redirect(url_for("web.dashboard"))
 
 # ===== API status transaksi (dipakai polling countdown di dashboard) =====
@@ -1483,15 +1596,17 @@ def api_tx_status():
     except Exception:
         ids = []
 
+    if len(ids) > 100:
+        return {"ok": False, "err": "too_many_ids"}, 400
     if not ids:
         return {"ok": True, "items": []}
 
     db = get_db()
     rows = db.execute(
-        """SELECT id, user_id, tanggal, status, cancel_until, product, nominal, admin_fee
+        """SELECT id, user_id, tanggal, status, cancel_until, product, nominal, admin_fee, admin_approved_at
            FROM transactions
-           WHERE id IN (%s)""" % ",".join("?"*len(ids)),
-        ids
+           WHERE user_id=? AND id IN (%s)""" % ",".join("?"*len(ids)),
+        [session["user_id"]] + ids
     ).fetchall()
 
     now = datetime.now()
@@ -1499,9 +1614,9 @@ def api_tx_status():
     for r in rows:
         # hitung sisa detik cancel window
         remaining = 0
-        if r["cancel_until"]:
+        if r["status"] == "on-proses" and not r["admin_approved_at"] and r["cancel_until"]:
             try:
-                cu = datetime.fromisoformat(r["cancel_until"])
+                cu = datetime.fromisoformat(str(r["cancel_until"]))
                 delta = (cu - now).total_seconds()
                 remaining = int(delta) if delta > 0 else 0
             except Exception:
@@ -1510,7 +1625,8 @@ def api_tx_status():
         items.append({
             "id": r["id"],
             "status": r["status"],
-            "remaining": remaining
+            "remaining": remaining,
+            "can_cancel": remaining > 0 and not r["admin_approved_at"] and r["status"] == "on-proses"
         })
 
     return {"ok": True, "items": items}
@@ -1615,9 +1731,7 @@ def admin_login():
 
 @bp.post("/admin/logout")
 def admin_logout():
-    session.pop("is_admin", None)
-    session.pop("is_superadmin", None)
-    session.pop("admin_name", None)
+    session.clear()
     flash("Anda telah logout admin.", "info")
     return redirect(url_for("web.login"))
 
@@ -1634,22 +1748,22 @@ def admin_dashboard():
     admin_company = session.get("company")
     admin_email = session.get("admin_email", "").lower() or session.get("email", "").lower()
     account_name = ""
+    avatar_url = None
     try:
         admin_email_norm = (admin_email or "").strip().lower()
         if admin_email_norm:
             row = db.execute(
-                "SELECT COALESCE(name, '') AS nama FROM admins WHERE LOWER(email)=?",
+                "SELECT COALESCE(name, '') AS nama, avatar_path FROM admins WHERE LOWER(email)=?",
                 (admin_email_norm,),
             ).fetchone()
             account_name = row["nama"] if row and row["nama"] else ""
+            if row and row["avatar_path"]:
+                avatar_url = url_for("static", filename=row["avatar_path"])
     except Exception:
         account_name = session.get("admin_name", "")
     
     # 💡 DETEKSI ROLE (Superadmin vs Induk vs Anak)
-    is_super = session.get("is_superadmin") or session.get("role") == "superadmin" or admin_email == "admin@example.com"
-    
-    # Cek secara live ke database apakah company milik admin bertindak sebagai Perusahaan Induk
-    # PT Windu Karya selalu dianggap induk/holding (lihat _is_parent_company)
+    is_super = bool(session.get("is_superadmin"))
     is_parent = bool(admin_company) and not is_super and _is_parent_company(db, admin_company)
 
     enabled_products = get_enabled_products()
@@ -1662,7 +1776,6 @@ def admin_dashboard():
             date(y, m, 1)
         except Exception:
             admin_fee_month = ""
-
     # =========================================================================
     # 🟢 KENDALI WAKTU MULTI-URUSAN (MURNI BERBASIS SIMULASI)
     # =========================================================================
@@ -1695,6 +1808,8 @@ def admin_dashboard():
     else:
         cache_company_key = f"LOCAL_{admin_company}"
         
+    where_clause, where_params = admin_employee_scope(db)
+
     cache_key = f"admin_kpi:v6:{cache_company_key}:{s_first}:{s_next}:{periode_key}:{trend_start_key}"
     cached_kpi = get_cache(cache_key)
     
@@ -1712,16 +1827,6 @@ def admin_dashboard():
         # 📊 GENERASI DATA JIKA CACHE KOSONG (SINKRON DENGAN STRUKTUR HOLDING / GMI)
         # =========================================================================
         
-        # Aturan main skope data filter perusahaan
-        if is_super:
-            where_clause = "1=1"
-            where_params = []
-        elif is_parent:
-            where_clause = "LOWER(TRIM(p.perusahaan_induk)) = ?"
-            where_params = [admin_company.strip().lower()]
-        else:
-            where_clause = "LOWER(TRIM(p.perusahaan)) = ?"
-            where_params = [admin_company.strip().lower()]
 
         # 1) AMBIL DATA DAFTAR TRANSAKSI (SINKRON KE TABEL 'users')
         if is_super:
@@ -1760,8 +1865,7 @@ def admin_dashboard():
             row = db.execute("SELECT COUNT(*) FROM pegawai WHERE status_aktif=0").fetchone()
             inactive_count = row["COUNT(*)"] if row else 0
         else:
-            peg_where = "LOWER(TRIM(perusahaan_induk)) = ?" if is_parent else "LOWER(TRIM(perusahaan)) = ?"
-            row = db.execute(f"SELECT COUNT(*) FROM pegawai WHERE {peg_where}", [admin_company.strip().lower()]).fetchone()
+            row = db.execute(f"SELECT COUNT(*) FROM pegawai p WHERE {where_clause}", where_params).fetchone()
             total_pegawai  = row["COUNT(*)"] if row else 0
             
             # --- BAGIAN YANG DIUPDATE (u.status_aktif diganti p.status_aktif) ---
@@ -2005,6 +2109,7 @@ def admin_dashboard():
         transactions=transactions,
         mk=mk,
         account_name=account_name,
+        avatar_url=avatar_url,
         total_pegawai=total_pegawai,
         total_register=total_register,
         not_registered=not_registered,
@@ -2060,6 +2165,9 @@ def admin_settings():
         ).fetchone()
 
     # Jika session bermasalah dan tidak ada data admin
+    env_account = session.get("auth_source") == "env_admin" and not adm
+    if env_account:
+        adm = {"email": session.get("admin_email"), "name": session.get("admin_name"), "password_hash": ""}
     if not adm:
         flash("Data sesi admin tidak valid. Silakan login kembali.", "error")
         return redirect(url_for("web.login"))
@@ -2068,10 +2176,14 @@ def admin_settings():
     def settings_context():
         return {
             "admin": adm,
-            "is_superadmin": False
+            "is_superadmin": False,
+            "env_account": env_account
         }
 
     if request.method == "POST":
+        if env_account:
+            flash("Password akun ENV dikelola melalui konfigurasi VPS.", "info")
+            return redirect(url_for("web.admin_settings"))
         form_type = request.form.get("form_type") or "password"
         
         # Keamanan tambahan: Tolak jika admin biasa mencoba menembak form_type milik superadmin
@@ -2100,11 +2212,15 @@ def admin_settings():
             return render_template("admin_settings.html", **settings_context())
 
         # Eksekusi update password baru ke database
-        db.execute(
-            "UPDATE admins SET password_hash=? WHERE id=?", 
-            (generate_password_hash(new_pw), adm["id"])
-        )
+        new_hash = generate_password_hash(new_pw)
+        cursor = db.execute("UPDATE admins SET password_hash=? WHERE id=? AND password_hash=?",
+                            (new_hash, adm["id"], adm["password_hash"]))
         db.commit()
+        if cursor.rowcount != 1:
+            session.clear()
+            flash("Password akun berubah saat diproses. Silakan login kembali.", "error")
+            return redirect(url_for("web.login"))
+        session["auth_version"] = credential_version(new_hash)
 
         flash("Password Anda berhasil diperbarui.", "success")
         return redirect(url_for("web.admin_dashboard"))
@@ -2125,21 +2241,13 @@ def admin_riwayat():
     admin_email = session.get("admin_email", "").lower() or session.get("email", "").lower()
     
     # 💡 DETEKSI ROLE (Copas rumus sakti dari dashboard lu)
-    is_super = session.get("is_superadmin") or session.get("role") == "superadmin" or admin_email == "admin@example.com"
+    is_super = bool(session.get("is_superadmin"))
     
     # PT Windu Karya selalu dianggap induk/holding (lihat _is_parent_company)
     is_parent = bool(admin_company) and not is_super and _is_parent_company(db, admin_company)
 
     # Aturan main skope data filter perusahaan (Rumus dashboard)
-    if is_super:
-        where_clause = "1=1"
-        where_params = []
-    elif is_parent:
-        where_clause = "LOWER(TRIM(p.perusahaan_induk)) = ?"
-        where_params = [admin_company.strip().lower()]
-    else:
-        where_clause = "LOWER(TRIM(p.perusahaan)) = ?"
-        where_params = [admin_company.strip().lower()]
+    where_clause, where_params = admin_employee_scope(db)
 
     # ... ke bawahnya sama (query SQL pakai JOIN murni + params) ...
 
@@ -2151,7 +2259,7 @@ def admin_riwayat():
     start_raw = (request.args.get("start") or "").strip()
     end_raw = (request.args.get("end") or "").strip()
 
-    today = date.today()
+    today = business_today()
     default_start = add_months(date(today.year, today.month, 1), -5)
     default_end = today
 
@@ -2226,7 +2334,9 @@ def admin_riwayat():
 
     project_sql = "SELECT DISTINCT TRIM(perusahaan) AS project FROM pegawai WHERE perusahaan IS NOT NULL AND TRIM(perusahaan) <> ''"
     project_params = []
-    if not is_super and admin_company:
+    if not is_super and not admin_company:
+        project_sql += " AND 1=0"
+    elif not is_super and admin_company:
         project_sql += " AND LOWER(TRIM(perusahaan_induk)) = LOWER(TRIM(?))" if is_parent else " AND LOWER(TRIM(perusahaan)) = LOWER(TRIM(?))"
         project_params.append(admin_company)
     elif is_super and f_company:
@@ -2278,7 +2388,9 @@ def admin_export():
       LEFT JOIN pegawai p  ON LOWER(p.email) = LOWER(u.email)
       WHERE 1=1
     """
-    params = []
+    db = get_db()
+    scope, params = admin_employee_scope(db)
+    sql += f" AND {scope}"
     if periode:
         sql += " AND t.periode = ?"
         params.append(periode)
@@ -2290,11 +2402,11 @@ def admin_export():
         params.append(status)
     sql += " ORDER BY t.periode DESC, t.tanggal DESC, t.id DESC"
 
-    rows = get_db().execute(sql, params).fetchall()
+    rows = db.execute(sql, params).fetchall()
 
     # Buat CSV in-memory (UTF-8-SIG nyaman di Excel)
     buf = io.StringIO()
-    w = csv.writer(buf)
+    w = SafeCSVWriter(buf)
     w.writerow(["ID","Tanggal","Periode","ID Pegawai","Pegawai","Email","Perusahaan","Jabatan","Tipe Rekening","No_Rek Bank",
                 "Produk","Nominal","Admin","Status","Keterangan","Dibuat"])
     for r in rows:
@@ -2384,12 +2496,7 @@ def admin_pegawai():
     admin_email = session.get("admin_email")
     
     # 💡 DETEKSI ROLE SUPERADMIN (Sama seperti sebelumnya)
-    is_super = session.get("is_superadmin") or session.get("role") == "superadmin" or admin_email == "admin@example.com"
-    if not is_super and admin_email:
-        admin_db = db.execute("SELECT role FROM admins WHERE LOWER(TRIM(email)) = LOWER(TRIM(?))", (admin_email,)).fetchone()
-        if admin_db and admin_db["role"] == "superadmin":
-            is_super = True
-
+    is_super = bool(session.get("is_superadmin"))
     # =========================================================================
     # 🔍 PROSES MERAKIT QUERY SQL PEGAWAI (OTOMATIS & DINAMIS)
     # =========================================================================
@@ -2465,48 +2572,19 @@ def admin_pegawai():
     # =========================================================================
     # 🗂️ LOGIK MENAMPILKAN ISI DROPDOWN FILTER SECARA OTOMATIS (SQUASH DUPLICATE)
     # =========================================================================
-    if is_super:
-        # Superadmin melihat semua anak perusahaan semesta alam (Satu nama unik)
-        company_rows = db.execute("""
-            SELECT DISTINCT LOWER(TRIM(perusahaan)) AS company FROM pegawai 
-            WHERE perusahaan IS NOT NULL AND TRIM(perusahaan) <> ''
-        """).fetchall()
-        # Bikin rapi huruf kapital di depan pakai .title()
-        companies = sorted(list({r["company"].title() for r in company_rows if r.get("company")}))
-        
-    elif admin_company:
-        # Cek ulang status induk untuk menentukan opsi dropdown (PT Windu Karya selalu induk)
-        is_parent = _is_parent_company(db, admin_company)
-
-        if is_parent:
-            # 🟢 DI SINI FIX-NYA: Kita bungkus pakai LOWER() di SQL biar cakra & Cakra dianggap SAMA
-            company_rows = db.execute("""
-                SELECT DISTINCT LOWER(TRIM(perusahaan)) AS company FROM pegawai 
-                WHERE LOWER(TRIM(perusahaan_induk)) = LOWER(TRIM(?))
-                  AND perusahaan IS NOT NULL AND TRIM(perusahaan) <> ''
-            """, (admin_company,)).fetchall()
-            
-            # Ubah jadi format judul (Kapital di awal kata) dan pastikan unik di Python
-            companies = sorted(list({r["company"].title() for r in company_rows if r.get("company")}))
-        else:
-            # Jika admin PT biasa, dropdown cuma berisi namanya sendiri (dirapikan juga)
-            companies = [admin_company.strip().title()]
-    else:
-        companies = []
-
-    total_len = len(rows)
-
-    # ===== Dropdown project resmi PT Windu Karya (anti typo/duplikat) =====
-    is_windu_admin = (not is_super) and is_windu_company(admin_company)   # admin yang company-nya persis "Windu Karya"
-    _show_windu_mgmt = is_windu_admin or is_super
-    windu_project_rows = get_windu_project_rows(db) if _show_windu_mgmt else []
-    windu_projects = [p["nama_project"] for p in windu_project_rows]
-
-    return render_template("admin_pegawai.html",
-                           rows=rows, q=q, companies=companies, f_company=f_company, total=total_len, is_superadmin=is_super,
-                           is_windu_admin=is_windu_admin, windu_projects=windu_projects,
-                           windu_project_rows=windu_project_rows,
-                           can_manage_windu_projects=can_manage_windu_projects())
+    company_sql = "SELECT DISTINCT perusahaan FROM pegawai WHERE TRIM(COALESCE(perusahaan,''))<>''"
+    company_params = []
+    if not is_super:
+        company_sql += " AND LOWER(TRIM(perusahaan_induk))=LOWER(TRIM(?))"
+        company_params.append(admin_company or "")
+    companies = sorted({row["perusahaan"] for row in db.execute(company_sql, company_params).fetchall()}, key=str.lower)
+    catalog = list_clients(db) if is_super else [client_by_name(db, admin_company)]
+    client_catalog = [{"name": client["name"], "allow_projects": bool(client["allow_projects"]),
+                       "projects": [project["name"] for project in list_projects(db, client["id"])]}
+                      for client in catalog if client]
+    return render_template("admin_pegawai.html", rows=rows, q=q, companies=companies,
+                           f_company=f_company, total=len(rows), is_superadmin=is_super,
+                           client_catalog=client_catalog, selected_client=request.args.get("client") or "")
 
 @bp.route("/admin/pegawai/add", methods=["POST"], endpoint="admin_pegawai_add")
 def admin_pegawai_add():
@@ -2521,38 +2599,16 @@ def admin_pegawai_add():
     
     # 🏢 Ambil company dari admin yang sedang login
     admin_company = session.get("company")
-    
-    # 🗂️ LOGIK MENENTUKAN PERUSAHAAN UTAMA (ANAK PERUSAHAAN)
-    if admin_company and not session.get("is_superadmin"):
-        # Jika dia admin lokal PT biasa (bukan induk/holding), isi otomatis dari session-nya.
-        # Tapi jika dia admin Induk (seperti GMI) atau PT Windu Karya (selalu dianggap induk),
-        # di form dia memilih anak perusahaan/project-nya sendiri.
-        if _is_parent_company(get_db(), admin_company):
-            # Admin Induk (GMI) / PT Windu Karya: nama anak perusahaan/project diambil dari form
-            perusahaan = (request.form.get("perusahaan") or "").strip()
-        else:
-            # Jika admin lokal biasa (Springhill/PT biasa), dipaksa sesuai PT dia sendiri
-            perusahaan = admin_company.strip()
-    else:
-        # Jika Superadmin, bebas ambil dari inputan form layar
-        perusahaan = (request.form.get("perusahaan") or "").strip()
-
-    # =========================================================================
-    # 🟢 DI SINI PROSES BELAKANG LAYAR OTOMATIS: MENENTUKAN PERUSAHAAN INDUK
-    # =========================================================================
-    if admin_company:
-        # Cek apakah company admin ini induk/holding (PT Windu Karya selalu induk)
-        if _is_parent_company(get_db(), admin_company):
-            # Otomatis stempel perusahaan_induk di belakang layar tanpa muncul di form inputan!
-            perusahaan_induk = admin_company.strip()
-        else:
-            # Jika admin lokal biasa, set sesuai field database jika diperlukan (atau dikosongkan)
-            perusahaan_induk = ""
-
-    # Mapping form -> database: Projects disimpan ke perusahaan, Perusahaan ke perusahaan_induk.
-    perusahaan = (request.form.get("perusahaan") or "").strip()
-    perusahaan_induk = ((request.form.get("perusahaan_induk") or "").strip()
-                        if session.get("is_superadmin") else (admin_company or "").strip())
+    db = get_db()
+    try:
+        perusahaan_induk, perusahaan = employee_assignment(
+            db, request.form.get("perusahaan_induk", admin_company or ""),
+            request.form.get("perusahaan", ""),
+            bool(session.get("is_superadmin")), admin_company,
+        )
+    except ValueError as error:
+        flash(str(error), "error")
+        return redirect(url_for("web.admin_pegawai"))
 
     no_rekening = (request.form.get("no_rekening") or "").strip()
     no_rekening_lain = (request.form.get("no_rekening_lain") or "").strip()
@@ -2568,6 +2624,9 @@ def admin_pegawai_add():
     else:
         admin_fee_flat = 15000
 
+    if not nama or not valid_email(email) or not 0 <= gaji <= 2_147_483_647:
+        flash("Nama/email wajib valid dan gaji harus berada antara 0 sampai 2.147.483.647.", "error")
+        return redirect(url_for("web.admin_pegawai"))
     if not id_pegawai or not nama or not email:
         flash("ID pegawai, nama, dan email wajib diisi.", "error")
         return redirect(url_for("web.admin_pegawai"))
@@ -2582,14 +2641,6 @@ def admin_pegawai_add():
         return redirect(url_for("web.admin_pegawai"))
 
     db = get_db()
-
-    # Admin PT Windu Karya WAJIB pilih project dari daftar resmi (anti typo/duplikat) - dicek ulang di
-    # server, bukan cuma di dropdown HTML, supaya tidak bisa dilewati lewat request manual.
-    if (not session.get("is_superadmin")) and is_windu_company(admin_company):
-        if not windu_project_exists(db, perusahaan):
-            flash('Perusahaan/project harus dipilih dari daftar resmi PT Windu Karya. '
-                  'Kalau project ini belum ada, daftarkan dulu lewat "Kelola Project Windu Karya".', "error")
-            return redirect(url_for("web.admin_pegawai"))
 
     exists = db.execute(
         "SELECT 1 FROM pegawai WHERE id_pegawai=? OR LOWER(email)=?",
@@ -2623,15 +2674,7 @@ def admin_pegawai_add():
 # =========================================================================================
 # ===== IMPORT PEGAWAI MASSAL LEWAT EXCEL (.xlsx) =====
 # =========================================================================================
-# Urutan kolom template (baris 1 = header, data mulai baris 2):
-#   A. ID Pegawai*        B. Nama*             C. Email*            D. Jabatan
-#   E. Perusahaan/Project F. No Rekening Bank  G. No Rekening Bank 2 H. Rekening E-Wallet
-#   I. No Telp            J. Gaji Pokok        K. Status Aktif      L. Siklus Gaji
-#   M. Admin Fee (khusus Superadmin - diabaikan untuk Admin biasa)
-# Validasi per baris memakai fungsi yang SAMA dengan form Tambah Pegawai manual
-# (employee_id_is_valid, ewallet_is_valid, parse_admin_fee_flat, normalize_siklus,
-# is_windu_company/windu_project_exists, _is_parent_company), supaya aturan bisnis konsisten
-# antara input satu-satu dan import massal.
+
 IMPORT_MAX_ROWS = 500          # batas baris per file, jaga-jaga dari file raksasa/typo massal
 IMPORT_MAX_FILE_BYTES = 5 * 1024 * 1024   # 5 MB
 IMPORT_STATUS_AKTIF_WORDS = {"1", "aktif", "active", "ya", "yes"}
@@ -2646,111 +2689,81 @@ def _import_str(v):
 
 @bp.get("/admin/pegawai/import/template")
 def admin_pegawai_import_template():
-    """Unduh template Excel kosong (header + 1 contoh baris + petunjuk), disesuaikan dengan
-    konteks admin yang login: kalau Admin PT Windu Karya, kolom Perusahaan dapat dropdown
-    berisi daftar project resmi yang sudah terdaftar."""
     ret = require_admin()
-    if ret: return ret
-
+    if ret:
+        return ret
+    from flask import send_file
     db = get_db()
-    admin_company = session.get("company")
-    is_super = session.get("is_superadmin")
-    is_windu_admin = (not is_super) and is_windu_company(admin_company)
-
+    is_super = bool(session.get("is_superadmin"))
+    catalog = list_clients(db) if is_super else [client_by_name(db, session.get("company"))]
+    catalog = [client for client in catalog if client]
     wb = Workbook()
     ws = wb.active
     ws.title = "Import Pegawai"
-
-    headers = [
-        "ID Pegawai*", "Nama*", "Email*", "Jabatan", "Perusahaan/Project",
-        "No Rekening Bank Utama", "No Rekening Bank Lain", "Rekening E-Wallet", "No Telp",
-        "Gaji Pokok", "Status Aktif", "Siklus Gaji", "Admin Fee",
-    ]
-    header_fill = PatternFill(start_color="1F2937", end_color="1F2937", fill_type="solid")
-    for col, h in enumerate(headers, start=1):
-        c = ws.cell(row=1, column=col, value=h)
-        c.font = Font(bold=True, color="FFFFFF")
-        c.fill = header_fill
-        c.alignment = Alignment(vertical="center")
-        ws.column_dimensions[c.column_letter].width = max(14, len(h) + 2)
-
-    contoh_perusahaan = ""
-    if is_windu_admin:
-        projects = get_windu_projects(db)
-        contoh_perusahaan = projects[0] if projects else "(daftarkan project dulu)"
-    elif not admin_company or is_super:
-        contoh_perusahaan = "Nama PT/Project"
-
-    contoh = ["EMP001", "Contoh Nama", "contoh@email.com", "Staff", contoh_perusahaan,
-              "1234567890", "", "081234567890", 5000000, "Aktif", "B", ""]
-    for col, v in enumerate(contoh, start=1):
-        ws.cell(row=2, column=col, value=v)
-
-    # Data validation dropdown supaya user tidak salah ketik Status/Siklus (dan Project khusus Windu)
-    dv_status = DataValidation(type="list", formula1='"Aktif,Nonaktif"', allow_blank=True)
-    ws.add_data_validation(dv_status)
-    dv_status.add("K2:K1000")
-
-    dv_siklus = DataValidation(type="list", formula1='"A,B,C,D"', allow_blank=True)
-    ws.add_data_validation(dv_siklus)
-    dv_siklus.add("L2:L1000")
-
-    if is_windu_admin:
-        projects = get_windu_projects(db)
-        if projects:
-            helper = wb.create_sheet("_daftar_project")  # sheet bantu, sumber dropdown
-            for i, p in enumerate(projects, start=1):
-                helper.cell(row=i, column=1, value=p)
-            helper.sheet_state = "hidden"
-            dv_proj = DataValidation(
-                type="list",
-                formula1=f"_daftar_project!$A$1:$A${len(projects)}",
-                allow_blank=True,
-            )
-            ws.add_data_validation(dv_proj)
-            dv_proj.add("E2:E1000")
-
-    catatan = wb.create_sheet("Petunjuk")
-    catatan.column_dimensions["A"].width = 100
-    petunjuk = [
-        "PETUNJUK PENGISIAN TEMPLATE IMPORT PEGAWAI",
-        "",
-        "1. Jangan ubah/hapus baris judul (baris 1) dan jangan ubah urutan kolom.",
-        "2. Baris ke-2 adalah CONTOH - hapus atau timpa dengan data pegawai sungguhan sebelum upload.",
-        "3. Kolom bertanda * (ID Pegawai, Nama, Email) WAJIB diisi.",
-        "4. ID Pegawai: huruf/angka saja, maksimal 16 karakter, harus unik (belum pernah dipakai).",
-        "5. Perusahaan/Project: khusus admin yang mengelola banyak project (holding), wajib diisi "
-        "sesuai daftar resmi. Untuk admin PT biasa, kolom ini boleh dikosongkan (otomatis ikut PT Anda).",
-        "6. Rekening E-Wallet: hanya boleh huruf, angka, dan spasi.",
-        "7. Status Aktif: isi 'Aktif' atau 'Nonaktif' (kosong = dianggap Aktif).",
-        "8. Siklus Gaji: isi salah satu A / B / C / D (kosong = dianggap B).",
-        "9. Admin Fee: HANYA berlaku kalau yang meng-upload adalah Superadmin (angka 0 - 1.000.000, "
-        "boleh pakai titik ribuan mis. 15.000). Kalau yang upload Admin biasa, kolom ini diabaikan.",
-        f"10. Maksimal {IMPORT_MAX_ROWS} baris data per file.",
-        "11. Kalau ada baris yang gagal (format salah / duplikat), baris lain yang valid TETAP masuk - "
-        "sistem akan menampilkan daftar baris mana saja yang gagal & alasannya.",
-    ]
-    if is_windu_admin:
-        petunjuk.insert(5, "   -> Kolom Perusahaan/Project Anda WAJIB pilih dari dropdown (daftar "
-                            "project resmi PT Windu Karya). Project baru harus didaftarkan dulu lewat "
-                            "\"Kelola Project Windu Karya\" sebelum bisa dipakai di file import.")
-    for i, line in enumerate(petunjuk, start=1):
-        cell = catatan.cell(row=i, column=1, value=line)
-        if i == 1:
-            cell.font = Font(bold=True, size=13)
-
-    out_dir = "/tmp/gajiku_import"
-    os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, f"template_import_pegawai_{int(time.time())}.xlsx")
-    wb.save(out_path)
-
-    from flask import send_file
-    return send_file(
-        out_path,
-        as_attachment=True,
-        download_name="Template_Import_Pegawai.xlsx",
-        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+    headers = ["ID Pegawai*", "Nama*", "Email*", "Jabatan", "Project",
+               "No Rekening Bank Utama", "No Rekening Bank Lain", "Rekening E-Wallet", "No Telp",
+               "Gaji Pokok", "Status Aktif", "Siklus Gaji", "Admin Fee", "Perusahaan*"]
+    for index, header in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=index, value=header)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill(start_color="1F2937", end_color="1F2937", fill_type="solid")
+        ws.column_dimensions[cell.column_letter].width = max(18, len(header) + 2)
+    company = catalog[0] if catalog else None
+    projects = list_projects(db, company["id"]) if company and company["allow_projects"] else []
+    example = ["EMP001", "Contoh Nama", "contoh@email.com", "Staff", projects[0]["name"] if projects else "",
+               "1234567890", "", "", "081234567890", 5000000, "Aktif", "B", "",
+               company["name"] if company else ""]
+    ws.append(example)
+    for cells, formula in (("K2:K1000", '"Aktif,Nonaktif"'), ("L2:L1000", '"A,B,C,D"')):
+        validation = DataValidation(type="list", formula1=formula, allow_blank=True)
+        ws.add_data_validation(validation)
+        validation.add(cells)
+    helper = wb.create_sheet("_master_client")
+    helper.append(["Perusahaan", "Project", "Milik PT"])
+    all_projects = []
+    for index, client in enumerate(catalog, start=2):
+        helper.cell(row=index, column=1, value=client["name"])
+        if client["allow_projects"]:
+            for project in list_projects(db, client["id"]):
+                all_projects.append((project["name"], client["name"]))
+    for index, (project, parent) in enumerate(all_projects, start=2):
+        helper.cell(row=index, column=2, value=project)
+        helper.cell(row=index, column=3, value=parent)
+    if catalog:
+        validation = DataValidation(type="list", formula1=f'INDIRECT("_master_client!A2:A{len(catalog)+1}")', allow_blank=False)
+        ws.add_data_validation(validation)
+        validation.add("N2:N1000")
+    if all_projects:
+        validation = DataValidation(type="list", formula1=f'INDIRECT("_master_client!B2:B{len(all_projects)+1}")', allow_blank=True)
+        ws.add_data_validation(validation)
+        validation.add("E2:E1000")
+    helper.sheet_state = "hidden"
+    instructions = wb.create_sheet("Petunjuk")
+    instructions.column_dimensions["A"].width = 110
+    for instruction in [
+        "IMPORT PEGAWAI: satu client = satu PT. Jangan ubah urutan 14 kolom.",
+        "Hapus atau timpa baris contoh sebelum upload. ID, nama, email, dan perusahaan wajib diisi.",
+        "Kolom E adalah Project; kolom N adalah Perusahaan. Superadmin wajib mengisi kolom N.",
+        "Admin PT terkunci pada perusahaan akunnya. Kolom N boleh kosong atau sama dengan PT akun.",
+        "Allow Projects: kolom E wajib memilih project terdaftar milik PT pada kolom N.",
+        "Disallow Projects: kolom E wajib kosong. Daftarkan project lewat Kelola Projects terlebih dahulu.",
+        "Dropdown project Superadmin memuat semua project. Server memvalidasi pemilik project per PT.",
+        "ID pegawai: alfanumerik maksimal 16 karakter. Siklus A/B/C/D. Status Aktif/Nonaktif.",
+        "Admin Fee hanya untuk Superadmin: angka 0 sampai 1.000.000. Admin PT memakai fee default.",
+        f"Maksimal {IMPORT_MAX_ROWS} baris. Baris valid disimpan; baris gagal dilaporkan.",
+        "Template lama tanpa kolom N tidak dapat dipakai Superadmin; unduh template terbaru.",
+    ]:
+        instructions.append([instruction])
+    for sheet in wb.worksheets:
+        for row in sheet.iter_rows():
+            for cell in row:
+                if isinstance(cell.value, str):
+                    cell.data_type = "s"
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return send_file(output, as_attachment=True, download_name="Template_Import_Pegawai.xlsx",
+                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 @bp.post("/admin/pegawai/import")
@@ -2758,6 +2771,9 @@ def admin_pegawai_import():
     ret = require_admin()
     if ret: return ret
 
+    limited = rate_limit("employee-import", str(session.get("admin_id") or session.get("admin_email")), limit=5, window=60)
+    if limited:
+        return limited
     file = request.files.get("file")
     if not file or not file.filename:
         flash("Pilih file Excel (.xlsx) terlebih dahulu.", "error")
@@ -2774,9 +2790,27 @@ def admin_pegawai_import():
         return redirect(url_for("web.admin_pegawai"))
 
     try:
+        with zipfile.ZipFile(file.stream) as archive:
+            if len(archive.infolist()) > 2000 or sum(item.file_size for item in archive.infolist()) > 50 * 1024 * 1024:
+                raise ValueError("File Excel terlalu besar setelah diekstrak")
+        file.seek(0)
         wb = load_workbook(file, data_only=True, read_only=True)
-        ws = wb.active
-        raw_rows = list(ws.iter_rows(min_row=2, values_only=True))
+        try:
+            ws = wb.active
+            if ws.max_column and ws.max_column > 30:
+                raise ValueError("Jumlah kolom Excel tidak valid")
+            if ws.max_row and ws.max_row > (IMPORT_MAX_ROWS + 1) * 5:
+                raise ValueError("Terlalu banyak baris fisik pada file Excel")
+            raw_rows = []
+            for physical_row, row in enumerate(ws.iter_rows(min_row=2, max_col=14, values_only=True), start=2):
+                if physical_row > (IMPORT_MAX_ROWS + 1) * 5:
+                    raise ValueError("Terlalu banyak baris fisik pada file Excel")
+                if any(value not in (None, "") for value in row):
+                    raw_rows.append(row)
+                if len(raw_rows) > IMPORT_MAX_ROWS:
+                    raise ValueError("Jumlah baris melebihi batas import")
+        finally:
+            wb.close()
     except Exception:
         flash("File tidak bisa dibaca. Pastikan formatnya .xlsx yang valid dan tidak corrupt.", "error")
         return redirect(url_for("web.admin_pegawai"))
@@ -2793,8 +2827,7 @@ def admin_pegawai_import():
     db = get_db()
     admin_company = session.get("company")
     is_super = bool(session.get("is_superadmin"))
-    is_parent = _is_parent_company(db, admin_company) if admin_company else False
-    windu_scoped = (not is_super) and is_windu_company(admin_company)
+
 
     existing = db.execute("SELECT id_pegawai, email FROM pegawai").fetchall()
     existing_ids = {(r["id_pegawai"] or "").strip().upper() for r in existing if r["id_pegawai"]}
@@ -2825,28 +2858,25 @@ def admin_pegawai_import():
             row_errors.append("ID Pegawai/Nama/Email wajib diisi")
         elif not employee_id_is_valid(id_pegawai):
             row_errors.append(f"ID Pegawai maksimal {EMPLOYEE_ID_MAX_LEN} karakter alfanumerik")
-        if email and "@" not in email:
+        if email and not valid_email(email):
             row_errors.append("Format email tidak valid")
+        if not 0 <= gaji <= 2_147_483_647:
+            row_errors.append("Gaji harus berada antara 0 sampai 2.147.483.647")
         if rekening_ewallet and not ewallet_is_valid(rekening_ewallet):
             row_errors.append("Rekening e-wallet hanya boleh huruf, angka, dan spasi")
 
         status = 0 if status_raw in IMPORT_STATUS_NONAKTIF_WORDS else 1  # default Aktif kalau kosong/tak dikenali
 
-        # Perusahaan/project - logika sama persis dengan form Tambah Pegawai manual
-        if admin_company and not is_super:
-            if is_parent:
-                perusahaan = perusahaan_cell
-                if not perusahaan:
-                    row_errors.append("Kolom Perusahaan/Project wajib diisi")
-                elif windu_scoped and not windu_project_exists(db, perusahaan):
-                    row_errors.append(f'Project "{perusahaan}" belum terdaftar di daftar resmi PT Windu Karya')
-            else:
-                perusahaan = admin_company.strip()   # dipaksa sesuai PT admin, kolom di file diabaikan
-        else:
-            perusahaan = perusahaan_cell
-            if is_super and not perusahaan:
-                row_errors.append("Kolom Perusahaan wajib diisi")
-        perusahaan_induk = admin_company.strip() if (admin_company and is_parent) else ""
+        company_cell = _import_str(_import_cell(row, 13)) if is_super else (admin_company or "")
+        if not is_super and len(row) > 13 and _import_str(row[13]) and name_key(_import_str(row[13])) != name_key(admin_company):
+            row_errors.append("Perusahaan pada file tidak sesuai perusahaan akun admin")
+        try:
+            perusahaan_induk, perusahaan = employee_assignment(
+                db, company_cell, perusahaan_cell, is_super, admin_company,
+            )
+        except ValueError as error:
+            row_errors.append(str(error))
+            perusahaan_induk, perusahaan = company_cell, perusahaan_cell
 
         if is_super:
             fee_value = parse_admin_fee_flat(fee_raw)
@@ -2917,44 +2947,19 @@ def admin_pegawai_update(pid):
     
     # 🏢 Ambil company dari admin yang sedang login
     admin_company = session.get("company")
-    
-    # 🗂️ LOGIK MENENTUKAN PERUSAHAAN UTAMA (ANAK PERUSAHAAN)
-    if admin_company and not session.get("is_superadmin"):
-        # Cek apakah dia admin induk/holding (PT Windu Karya selalu dianggap induk)
-        if _is_parent_company(db, admin_company):
-            # Admin Induk (GMI) / PT Windu Karya: Anak perusahaan/project bebas diubah via form layar
-            perusahaan = (request.form.get("perusahaan") or "").strip()
-        else:
-            # Admin lokal PT biasa: Dipaksa sesuai perusahaan dia sendiri
-            perusahaan = admin_company.strip()
-    else:
-        # Superadmin: Bebas mengambil dari inputan form layar
-        perusahaan = (request.form.get("perusahaan") or "").strip()
-
-    # =========================================================================
-    # 🟢 DI SINI PROSES BELAKANG LAYAR OTOMATIS: MENENTUKAN PERUSAHAAN INDUK
-    # =========================================================================
-    perusahaan_induk = ""
-    if admin_company and not session.get("is_superadmin"):
-        # Cek status induk admin login (PT Windu Karya selalu dianggap induk)
-        if _is_parent_company(db, admin_company):
-            perusahaan_induk = admin_company.strip()
-    else:
-        # 👑 Proteksi Khusus Superadmin: Jika superadmin mengubah data anak perusahaan, 
-        # kita bantu lacak otomatis siapa perusahaan induknya berdasarkan database historis
-        if perusahaan:
-            parent_match = db.execute("""
-                SELECT perusahaan_induk FROM pegawai 
-                WHERE LOWER(TRIM(perusahaan)) = LOWER(TRIM(?)) 
-                  AND perusahaan_induk IS NOT NULL AND perusahaan_induk <> '' LIMIT 1
-            """, (perusahaan,)).fetchone()
-            if parent_match:
-                perusahaan_induk = parent_match["perusahaan_induk"]
-
-    # Mapping form -> database: Projects disimpan ke perusahaan, Perusahaan ke perusahaan_induk.
-    perusahaan = (request.form.get("perusahaan") or "").strip()
-    perusahaan_induk = ((request.form.get("perusahaan_induk") or "").strip()
-                        if session.get("is_superadmin") else (admin_company or "").strip())
+    db = get_db()
+    existing = db.execute("SELECT * FROM pegawai WHERE id=?", (pid,)).fetchone()
+    if not existing:
+        return "Pegawai tidak ditemukan", 404
+    try:
+        perusahaan_induk, perusahaan = employee_assignment(
+            db, request.form.get("perusahaan_induk", existing["perusahaan_induk"]),
+            request.form.get("perusahaan", existing["perusahaan"]),
+            bool(session.get("is_superadmin")), admin_company, existing=existing,
+        )
+    except ValueError as error:
+        flash(str(error), "error")
+        return redirect(url_for("web.admin_pegawai"))
 
     no_rekening = (request.form.get("no_rekening") or "").strip()
     no_rekening_lain = (request.form.get("no_rekening_lain") or "").strip()
@@ -2978,6 +2983,9 @@ def admin_pegawai_update(pid):
     else:
         admin_fee_flat = current_fee
 
+    if not nama or not valid_email(email) or not 0 <= gaji <= 2_147_483_647:
+        flash("Nama/email wajib valid dan gaji harus berada antara 0 sampai 2.147.483.647.", "error")
+        return redirect(url_for("web.admin_pegawai"))
     if not id_pegawai:
         flash("ID pegawai wajib diisi.", "error")
         return redirect(url_for("web.admin_pegawai"))
@@ -2987,14 +2995,6 @@ def admin_pegawai_update(pid):
     if not ewallet_is_valid(rekening_ewallet):
         flash("Rekening e-wallet hanya boleh berisi huruf, angka, dan spasi.", "error")
         return redirect(url_for("web.admin_pegawai"))
-
-    # Admin PT Windu Karya WAJIB pilih project dari daftar resmi (anti typo/duplikat) - dicek ulang di
-    # server, bukan cuma di dropdown HTML, supaya tidak bisa dilewati lewat request manual.
-    if (not session.get("is_superadmin")) and is_windu_company(admin_company):
-        if not windu_project_exists(db, perusahaan):
-            flash('Perusahaan/project harus dipilih dari daftar resmi PT Windu Karya. '
-                  'Kalau project ini belum ada, daftarkan dulu lewat "Kelola Project Windu Karya".', "error")
-            return redirect(url_for("web.admin_pegawai"))
 
     row = db.execute("SELECT email FROM pegawai WHERE id=?", (pid,)).fetchone()
     old_email = (row["email"] or "").strip().lower() if row else ""
@@ -3038,6 +3038,7 @@ def admin_pegawai_update(pid):
 
 
 @bp.route("/admin/pegawai/<int:pid>/delete", methods=["POST"])
+@serialized_employee_write
 def admin_pegawai_delete(pid: int):
     if not session.get("is_superadmin"):
         ret = require_admin()
@@ -3054,35 +3055,15 @@ def admin_pegawai_delete(pid: int):
         flash("Pegawai tidak ditemukan.", "error")
         return redirect(url_for("web.admin_pegawai"))
         
-    # Fungsi pembantu untuk membaca data baris, fleksibel Dict atau Tuple
-    def get_val(r, key_str, idx):
-        if isinstance(r, dict):
-            return r.get(key_str) or r.get(key_str.lower()) or r.get(key_str.upper())
-        return r[idx] if len(r) > idx else None
-
-    # Ekstrak data pegawai secara aman
-    pegawai_company = (get_val(row, "perusahaan", 6) or "").strip().lower()
-    pegawai_induk = (get_val(row, "perusahaan_induk", 7) or "").strip().lower()
-    peg_email = (get_val(row, "email", 3) or "").strip().lower()
-
-    # =========================================================================
-    # 🛑 PROTECTIONS BERDASARKAN LEVEL INDUK / ANAK PERUSAHAAN
-    # =========================================================================
-    if not is_super:
-        if not admin_company:
-            flash("Akses ditolak! Anda tidak memiliki otoritas perusahaan.", "error")
-            return redirect(url_for("web.admin_pegawai"))
-
-        is_parent = _is_parent_company(db, admin_company)
-
-        if is_parent:
-            if pegawai_induk != admin_company.strip().lower():
-                flash("Akses ditolak! Pegawai ini tidak berada di bawah naungan holding Anda.", "error")
-                return redirect(url_for("web.admin_pegawai"))
-        else:
-            if pegawai_company != admin_company.strip().lower():
-                flash("Akses ditolak! Anda tidak berhak menghapus pegawai dari perusahaan lain.", "error")
-                return redirect(url_for("web.admin_pegawai"))
+    peg_email = name_key(row["email"])
+    if not is_super and (not name_key(admin_company) or name_key(row["perusahaan_induk"]) != name_key(admin_company)):
+        flash("Akses ditolak! Pegawai ini bukan milik perusahaan Anda.", "error")
+        return redirect(url_for("web.admin_pegawai"))
+    has_history = db.execute("""SELECT 1 FROM transactions t JOIN users u ON u.id=t.user_id
+        WHERE LOWER(u.email)=? LIMIT 1""", (peg_email,)).fetchone()
+    if has_history:
+        flash("Pegawai memiliki riwayat transaksi. Nonaktifkan pegawai agar riwayat finansial tetap tersimpan.", "error")
+        return redirect(url_for("web.admin_pegawai"))
 
     # =========================================================================
     # ---- Blok Proses Sapu Bersih Data ----
@@ -3090,13 +3071,6 @@ def admin_pegawai_delete(pid: int):
     try:
         # ---- 1) Arsipkan snapshot pegawai ----
         # ---- 1) Arsipkan snapshot pegawai (FIXED SNAPSHOT KOSONG) ----
-        db.execute("""
-            CREATE TABLE IF NOT EXISTS pegawai_archive (
-                pegawai_id INTEGER,
-                snapshot   TEXT,
-                deleted_at TEXT
-            )
-        """)
         
         # Bongkar data objek row MySQL menjadi dict murni Python
         try:
@@ -3119,8 +3093,8 @@ def admin_pegawai_delete(pid: int):
             snap = json.dumps({"id": pid, "error": "Gagal serialize snapshot"})
         
         db.execute(
-            "INSERT INTO pegawai_archive (pegawai_id, snapshot, deleted_at) VALUES (?,?, NOW())",
-            (pid, snap)
+            "INSERT INTO pegawai_archive (pegawai_id, snapshot, deleted_at) VALUES (?,?,?)",
+            (pid, snap, datetime.now().isoformat(timespec="seconds"))
         )
 
         # ---- 2) Hapus semua relasi anak ----
@@ -3181,7 +3155,8 @@ def admin_pegawai_delete(pid: int):
         db.rollback()
         import traceback
         error_msg = traceback.format_exc().strip().split('\n')[-1]
-        flash(f"Gagal hapus permanen: {error_msg} (Detail: {e})", "error")
+        current_app.logger.exception("Gagal menghapus pegawai id=%s", pid)
+        flash("Pegawai belum dapat dihapus. Periksa dependensi dan log server.", "error")
 
     return redirect(url_for("web.admin_pegawai"))
 
@@ -3189,6 +3164,7 @@ def admin_pegawai_delete(pid: int):
 # Approve Admin TIDAK membuat transaksi 'sukses'. Status tetap 'on-proses' dan baru final
 # setelah Superadmin approve (lihat superadmin_tx_approve).
 @bp.post("/admin/tx/<int:txid>/approve")
+@serialized_transaction
 def admin_tx_approve(txid):
     ret = require_admin()
     if ret: return ret
@@ -3216,17 +3192,18 @@ def admin_tx_approve(txid):
         return redirect(url_for("web.admin_dashboard"))
 
     who = session.get("admin_name") or session.get("admin_email") or "admin"
-    db.execute(
+    cursor = db.execute(
         "UPDATE transactions SET admin_approved_at=?, admin_approved_by=? "
         "WHERE id=? AND status='on-proses' AND admin_approved_at IS NULL",
         (datetime.now().isoformat(timespec="seconds"), str(who)[:255], txid),
     )
     db.commit()
     clear_cache_prefix("admin_kpi:")
-    flash("Approve Admin berhasil. Menunggu approve Superadmin (transfer).", "success")
+    flash("Approve Admin berhasil. Menunggu approve Superadmin (transfer)." if cursor.rowcount == 1 else "Transaksi sudah diproses.", "info")
     return redirect(url_for("web.admin_dashboard"))
 
 @bp.post("/admin/tx/<int:txid>/reject")
+@serialized_transaction
 def admin_tx_reject(txid):
     ret = require_admin()
     if ret: return ret
@@ -3251,13 +3228,13 @@ def admin_tx_reject(txid):
         flash("Transaksi sudah Anda approve; penolakan selanjutnya dilakukan oleh Superadmin.", "info")
         return redirect(url_for("web.admin_dashboard"))
 
-    db.execute(
+    cursor = db.execute(
         "UPDATE transactions SET status='ditolak' WHERE id=? AND status='on-proses' AND admin_approved_at IS NULL",
         (txid,),
     )
     db.commit()
     clear_cache_prefix("admin_kpi:")
-    flash("Transaksi ditolak.", "info")
+    flash("Transaksi ditolak." if cursor.rowcount == 1 else "Transaksi sudah diproses.", "info")
     return redirect(url_for("web.admin_dashboard"))
 
 # =========================================================================================================================
@@ -3289,7 +3266,7 @@ def superadmin_dashboard():
         ORDER BY company
     """).fetchall()
     companies = [r["company"].title() for r in company_rows if r["company"]]
-    today = date.today()
+    today = business_today()
 
     admin_email = session.get("admin_email", "").lower() or session.get("email", "").lower()
     account_name = ""
@@ -3723,18 +3700,19 @@ def superadmin_settings():
         adm = db.execute("SELECT id, name, email, password_hash FROM admins WHERE id=?", (session["admin_id"],)).fetchone()
     if not adm and session.get("admin_email"):
         adm = db.execute("SELECT id, name, email, password_hash FROM admins WHERE LOWER(email)=?", (session["admin_email"].lower(),)).fetchone()
+    env_account = session.get("auth_source") == "env_super" or session.get("admin_id") == 0
+    if env_account:
+        adm = {"name": "Superadmin ENV", "email": session.get("admin_email"), "password_hash": ""}
     if not adm:
-        adm = db.execute("SELECT id, name, email, password_hash FROM admins ORDER BY id LIMIT 1").fetchone()
-
-    if not adm:
-        flash("Data admin belum ada. Inisialisasi gagal.", "error")
-        return redirect(url_for("web.superadmin_dashboard"))
+        flash("Akun Superadmin tidak ditemukan. Silakan login kembali.", "error")
+        return redirect(url_for("web.login"))
 
     def settings_context():
         return {
             "admin": adm,
             "ppn_enabled": get_ppn_enabled(),
             "is_superadmin": bool(session.get("is_superadmin")),
+            "env_account": env_account,
             "runtime_force_limit": get_runtime_force_limit(),
         }
 
@@ -3753,8 +3731,7 @@ def superadmin_settings():
                 return redirect(url_for("web.superadmin_settings"))
             enabled = request.form.get("runtime_force_limit") == "1"
             set_runtime_force_limit(enabled)
-            if enabled:
-                return ("", 500)
+            flash("Pengaturan tersimpan.", "success")
             return redirect(url_for("web.superadmin_settings"))
 
         old_pw = request.form.get("old_password") or ""
@@ -3762,9 +3739,10 @@ def superadmin_settings():
         new_pw2 = request.form.get("new_password2") or ""
 
         # izinkan verifikasi menggunakan hash di DB ATAU password ENV (untuk admin default)
-        env_ok = (old_pw == current_app.config["ADMIN_PASSWORD"])
-        db_ok  = check_password_hash(adm["password_hash"], old_pw)
-        if not (env_ok or db_ok):
+        if env_account:
+            flash("Password akun ENV diubah melalui konfigurasi VPS, bukan akun admin lain.", "info")
+            return redirect(url_for("web.superadmin_settings"))
+        if not check_password_hash(adm["password_hash"], old_pw):
             flash("Password lama tidak cocok.", "error")
             return render_template("superadmin_settings.html", **settings_context())
 
@@ -3776,8 +3754,15 @@ def superadmin_settings():
             flash("Konfirmasi password baru tidak cocok.", "error")
             return render_template("superadmin_settings.html", **settings_context())
 
-        db.execute("UPDATE admins SET password_hash=? WHERE id=?", (generate_password_hash(new_pw), adm["id"]))
+        new_hash = generate_password_hash(new_pw)
+        cursor = db.execute("UPDATE admins SET password_hash=? WHERE id=? AND password_hash=?",
+                            (new_hash, adm["id"], adm["password_hash"]))
         db.commit()
+        if cursor.rowcount != 1:
+            session.clear()
+            flash("Password akun berubah saat diproses. Silakan login kembali.", "error")
+            return redirect(url_for("web.login"))
+        session["auth_version"] = credential_version(new_hash)
 
         flash("Password SuperAdmin berhasil diperbarui. Mulai sekarang Anda bisa login menggunakan kredensial DB.", "success")
         return redirect(url_for("web.superadmin_dashboard"))
@@ -3826,8 +3811,7 @@ def superadmin_admins():
     rows = db.execute(query, params).fetchall()
     
     # 4. Ambil daftar perusahaan UNIK untuk dipasang di dropdown select HTML
-    companies_rows = db.execute("SELECT DISTINCT company FROM admins WHERE company IS NOT NULL AND company != '' ORDER BY company ASC").fetchall()
-    companies = [c["company"] for c in companies_rows]
+    companies = [client["name"] for client in list_clients(db)]
     
     # Hitung total hasil filter
     total = len(rows)
@@ -3844,6 +3828,7 @@ def superadmin_admins():
 
 # --- B. EDIT ADMIN & COMPANY ---
 @bp.route("/superadmin/admins/edit/<int:admin_id>", methods=["POST"])
+@serialized_admin_write
 def superadmin_edit_admin(admin_id):
     if not session.get("is_superadmin"):
         return "Akses Ditolak", 403
@@ -3852,9 +3837,22 @@ def superadmin_edit_admin(admin_id):
     email = (request.form.get("email") or "").strip().lower()
     company = (request.form.get("perusahaan") or "").strip()
     no_telp = (request.form.get("no_telp") or "").strip()
+    if not name or not valid_email(email):
+        flash("Nama dan email admin wajib valid.", "error")
+        return redirect(url_for("web.superadmin_admins"))
+    db = get_db()
+    existing_admin = db.execute("SELECT company FROM admins WHERE id=?", (admin_id,)).fetchone()
+    if not existing_admin:
+        return "Admin tidak ditemukan", 404
+    registered_client = client_by_name(db, company)
+    if (company and not registered_client) or (not company and existing_admin["company"]):
+        flash("Pilih perusahaan yang sudah terdaftar di Kelola Client.", "error")
+        return redirect(url_for("web.superadmin_admins"))
+    if registered_client:
+        company = registered_client["name"]
     
     # 💡 Tangkap input status dari select HTML, paksa jadi integer (0 atau 1)
-    status_aktif = int(request.form.get("status", 1)) 
+    status_aktif = 1 if request.form.get("status", "1") == "1" else 0
     # Hak approve/tolak tarik gaji (LAYER 1) - checkbox, tidak terkirim sama sekali kalau tidak dicentang
     hak_approval = 1 if request.form.get("hak_approval") in ("1", "on", "true") else 0
     cutoff_aktif = 1 if request.form.get("cutoff_mingguan_aktif") in ("1", "on", "true") else 0
@@ -3869,6 +3867,10 @@ def superadmin_edit_admin(admin_id):
         return redirect(url_for("web.superadmin_admins"))
     
     db = get_db()
+    coverage_error = admin_coverage_error(db, admin_id, company, status_aktif, hak_approval)
+    if coverage_error:
+        flash(coverage_error, "error")
+        return redirect(url_for("web.superadmin_admins"))
 
     # PT Windu Karya wajib selalu ada admin (lihat superadmin_final_gate) - kalau ini admin Windu Karya
     # SATU-SATUNYA yang hak_approval-nya masih menyala dan mau dimatikan, beri peringatan (tetap boleh
@@ -3908,6 +3910,7 @@ def superadmin_edit_admin(admin_id):
         if windu_warning:
             flash(windu_warning, "warning")
     except Exception as e:
+        db.rollback()
         current_app.logger.exception("Gagal mengupdate admin id=%s", admin_id)
         flash("Gagal mengupdate admin. Cek log server untuk detail.", "danger")
         
@@ -3916,11 +3919,16 @@ def superadmin_edit_admin(admin_id):
 
 # --- C. HAPUS ADMIN ---
 @bp.route("/superadmin/admins/delete/<int:admin_id>", methods=["POST"])
+@serialized_admin_write
 def superadmin_delete_admin(admin_id):
     if not session.get("is_superadmin"):
         return "Akses Ditolak", 403
         
     db = get_db()
+    coverage_error = admin_coverage_error(db, admin_id)
+    if coverage_error:
+        flash(coverage_error, "error")
+        return redirect(url_for("web.superadmin_admins"))
     db.execute("DELETE FROM admins WHERE id=?", (admin_id,))
     db.commit()
     
@@ -3929,6 +3937,7 @@ def superadmin_delete_admin(admin_id):
 
 # --- D. PROSES TAMBAH ADMIN (RUTE TERPISAH) ---
 @bp.route("/superadmin/admins/add", methods=["POST"])
+@serialized_admin_write
 def superadmin_admins_add():
     # Proteksi: Pastikan hanya superadmin yang bisa nge-post ke sini
     if not session.get("is_superadmin"):
@@ -3942,7 +3951,14 @@ def superadmin_admins_add():
     password = request.form.get("password") or ""
     company = (request.form.get("perusahaan") or "").strip()
     no_telp = (request.form.get("no_telp") or "").strip()
-    status_aktif = int(request.form.get("status", 1))
+    db = get_db()
+    registered_client = client_by_name(db, company)
+    if not registered_client:
+        flash("Pilih perusahaan yang sudah terdaftar di Kelola Client.", "error")
+        return redirect(url_for("web.superadmin_admins"))
+    if registered_client:
+        company = registered_client["name"]
+    status_aktif = 1 if request.form.get("status", "1") == "1" else 0
     # Hak approve/tolak tarik gaji (LAYER 1) - default OFF kalau tidak dicentang, konsisten dgn
     # kebijakan "semua admin default tidak punya hak approval sampai dinyalakan manual Superadmin".
     hak_approval = 1 if request.form.get("hak_approval") in ("1", "on", "true") else 0
@@ -3979,7 +3995,7 @@ def superadmin_admins_add():
         produk_reg_aktif = int(existing_products["reg_on"] or 0)
         produk_urg_aktif = int(existing_products["urg_on"] or 0)
 
-    if not name or not email or not password:
+    if not name or not valid_email(email) or not password_ok(password):
         flash("Semua field wajib diisi!", "warning")
         return redirect(url_for("web.superadmin_admins"))
         
@@ -3990,14 +4006,15 @@ def superadmin_admins_add():
         # Tambahkan kolom role dan status_aktif ke dalam query INSERT (Sudah fix untuk MariaDB)
         db.execute(
             """
-            INSERT INTO admins (name, email, password_hash, company, no_telp, role, status_aktif, hak_approval, cutoff_mingguan_aktif, cutoff_hari, produk_reg_aktif, produk_urg_aktif, created_at) 
-            VALUES (?, ?, ?, ?, ?, 'admin', 1, ?, ?, ?, ?, ?, ?)
+            INSERT INTO admins (name, email, password_hash, company, no_telp, role, status_aktif, hak_approval, cutoff_mingguan_aktif, cutoff_hari, produk_reg_aktif, produk_urg_aktif, created_at)
+            VALUES (?, ?, ?, ?, ?, 'admin', ?, ?, ?, ?, ?, ?, ?)
             """,
-            (name, email, pw_hash, company, no_telp, hak_approval, cutoff_aktif, cutoff_hari, produk_reg_aktif, produk_urg_aktif, datetime.now().isoformat(timespec="seconds"))
+            (name, email, pw_hash, company, no_telp, status_aktif, hak_approval, cutoff_aktif, cutoff_hari, produk_reg_aktif, produk_urg_aktif, datetime.now().isoformat(timespec="seconds"))
         )
         db.commit()
         flash(f"Admin baru untuk Perusahaan '{company}' berhasil dibuat!", "success")
     except Exception as e:
+        db.rollback()
         current_app.logger.exception("Gagal menambah admin")
         flash("Gagal menambah admin. Cek log server untuk detail.", "danger")
         
@@ -4013,7 +4030,7 @@ def superadmin_riwayat():
     # 1. Ambil data Identitas & Set Rule Global Superadmin (1=1)
     admin_company = session.get("company")
     admin_email = session.get("admin_email", "").lower() or session.get("email", "").lower()
-    is_super = session.get("is_superadmin") or session.get("role") == "superadmin" or admin_email == "admin@example.com"
+    is_super = bool(session.get("is_superadmin"))
 
     where_clause = "1=1"
     where_params = []
@@ -4027,7 +4044,7 @@ def superadmin_riwayat():
     end_raw = (request.args.get("end") or "").strip()
 
     # 3. Handle penanggalan (Parsing Date) -> INI HARUS DI ATAS QUERY UTAMA
-    today = date.today()
+    today = business_today()
     default_start = add_months(date(today.year, today.month, 1), -5)
     default_end = today
 
@@ -4101,22 +4118,22 @@ def superadmin_riwayat():
     # 6. Jalankan Logic List Companies Pilihan Lu
     if is_super:
         company_rows = db.execute("""
-            SELECT DISTINCT LOWER(TRIM(perusahaan_induk)) AS company FROM pegawai
+            SELECT DISTINCT TRIM(perusahaan_induk) AS company FROM pegawai
             WHERE perusahaan_induk IS NOT NULL AND TRIM(perusahaan_induk) <> ''
         """).fetchall()
-        companies = sorted(list({r["company"].title() for r in company_rows if r.get("company")}))
+        companies = sorted({r["company"] for r in company_rows if r["company"]})
     elif admin_company:
         is_parent = _is_parent_company(db, admin_company)  # PT Windu Karya selalu induk
 
         if is_parent:
             company_rows = db.execute("""
-                SELECT DISTINCT LOWER(TRIM(perusahaan)) AS company FROM pegawai 
+                SELECT DISTINCT TRIM(perusahaan) AS company FROM pegawai
                 WHERE LOWER(TRIM(perusahaan_induk)) = LOWER(TRIM(?))
                   AND perusahaan IS NOT NULL AND TRIM(perusahaan) <> ''
             """, (admin_company,)).fetchall()
-            companies = sorted(list({r["company"].title() for r in company_rows if r.get("company")}))
+            companies = sorted({r["company"] for r in company_rows if r["company"]})
         else:
-            companies = [admin_company.strip().title()]
+            companies = [admin_company.strip()]
     else:
         companies = []
 
@@ -4159,6 +4176,7 @@ def superadmin_riwayat():
 # =========================================================
 @bp.post("/admin/reset")
 def admin_reset_data():
+    require_destructive_reset()
     ret = require_admin()
     if ret:
         return ret
@@ -4173,6 +4191,7 @@ def admin_reset_data():
 
 @bp.post("/admin/reset_all")
 def admin_reset_all():
+    require_destructive_reset()
     ret = require_admin()
     if ret:
         return ret
@@ -4191,6 +4210,7 @@ def admin_reset_all():
 
 @bp.post("/superadmin/reset")
 def superadmin_reset_data():
+    require_destructive_reset()
     ret = require_superadmin()
     if ret:
         return ret
@@ -4205,6 +4225,7 @@ def superadmin_reset_data():
 
 @bp.post("/superadmin/reset_all")
 def superadmin_reset_all():
+    require_destructive_reset()
     ret = require_superadmin()
     if ret:
         return ret
@@ -4223,7 +4244,7 @@ def superadmin_reset_all():
 
 @bp.post("/admin/products")
 def admin_products():
-    ret = require_admin()
+    ret = require_superadmin()
     if ret:
         return ret
 
@@ -4366,7 +4387,7 @@ def superadmin_export_range():
     rows = get_db().execute(sql, params).fetchall()
 
     buf = io.StringIO()
-    w = csv.writer(buf)
+    w = SafeCSVWriter(buf)
     w.writerow(["ID","Tanggal","Periode","ID Pegawai","Pegawai","Email","Perusahaan","Jabatan","Tipe Rekening","No_Rek Bank","Siklus",
                 "Produk","Nominal","Admin","Status","Keterangan","Dibuat"])
     for r in rows:
@@ -4395,6 +4416,7 @@ def superadmin_export_range():
 
 # ===== Approve/Reject SuperAdmin (LAYER 2 / FINAL - Superadmin yang melakukan transfer) ======
 @bp.post("/superadmin/tx/<int:txid>/approve")
+@serialized_transaction
 def superadmin_tx_approve(txid):
     ret = require_superadmin()
     if ret: return ret
@@ -4411,29 +4433,31 @@ def superadmin_tx_approve(txid):
         return redirect(url_for("web.superadmin_dashboard"))
 
     who = session.get("admin_name") or session.get("admin_email") or "superadmin"
-    db.execute(
+    cursor = db.execute(
         "UPDATE transactions SET status='sukses', final_approved_at=?, final_approved_by=? "
         "WHERE id=? AND status='on-proses'",
         (datetime.now().isoformat(timespec="seconds"), str(who)[:255], txid),
     )
     db.commit()
     clear_cache_prefix("admin_kpi:")
-    flash("Transaksi diset sebagai SUKSES.", "success")
+    flash("Status dicatat SUKSES. Pastikan transfer telah berhasil dan bukti transfer disimpan." if cursor.rowcount == 1 else "Transaksi sudah diproses.", "info")
     return redirect(url_for("web.superadmin_dashboard"))
 
 @bp.post("/superadmin/tx/<int:txid>/reject")
+@serialized_transaction
 def superadmin_tx_reject(txid):
     ret = require_superadmin()
     if ret: return ret
     db = get_db()
-    db.execute("UPDATE transactions SET status='ditolak' WHERE id=? AND status='on-proses'", (txid,))
+    cursor = db.execute("UPDATE transactions SET status='ditolak' WHERE id=? AND status='on-proses'", (txid,))
     db.commit()
     clear_cache_prefix("admin_kpi:")
-    flash("Transaksi ditolak.", "info")
+    flash("Transaksi ditolak." if cursor.rowcount == 1 else "Transaksi tidak ditemukan atau sudah diproses.", "info")
     return redirect(url_for("web.superadmin_dashboard"))
 
 @bp.route("/reset", methods=["POST"], endpoint="reset")
 def reset_db():
+    require_destructive_reset()
     session.clear()
     db = get_db()
     db.execute("DELETE FROM transactions")
@@ -4444,8 +4468,6 @@ def reset_db():
 
 @bp.post("/superadmin/logout")
 def superadmin_logout():
-    session.pop("is_admin", None)
-    session.pop("is_superadmin", None)
-    session.pop("admin_name", None)
+    session.clear()
     flash("Anda telah logout Superadmin.", "info")
     return redirect(url_for("web.login"))

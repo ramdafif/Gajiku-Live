@@ -4,6 +4,7 @@ from datetime import datetime
 
 from flask import current_app, g
 from werkzeug.security import generate_password_hash
+from app.services.client_service import ensure_clients_schema
 
 try:
     import mysql.connector
@@ -17,6 +18,7 @@ class MySQLConnectionWrapper:
 
     def cursor(self, *args, **kwargs):
         kwargs.setdefault("dictionary", True)
+        kwargs.setdefault("buffered", True)
         return self._conn.cursor(*args, **kwargs)
 
     def execute(self, sql, params=None):
@@ -288,61 +290,62 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
-    # seed admin default jika kosong
-    admin = db.execute("SELECT id FROM admins LIMIT 1").fetchone()
-    if not admin:
-        # Akun Superadmin (menggantikan admin default)
-        db.execute(
-            "INSERT INTO admins (name, email, password_hash, created_at) VALUES (?,?,?,?)",
-            (
-                "Superadmin Utama",
-                "superadmin@example.com",
-                generate_password_hash("superadmin123"),
-                datetime.now().isoformat(timespec="seconds"),
-            ),
-        )
-        # Akun Admin Biasa
-        db.execute(
-            "INSERT INTO admins (name, email, password_hash, created_at) VALUES (?,?,?,?)",
-            (
-                "Admin Biasa",
-                "admin@example.com",
-                generate_password_hash("admin123"),
-                datetime.now().isoformat(timespec="seconds"),
-            ),
-        )
-        db.commit()
+    if current_app.config.get("SEED_DEMO_DATA"):
+        # seed admin default jika kosong
+        admin = db.execute("SELECT id FROM admins LIMIT 1").fetchone()
+        if not admin:
+            # Akun Superadmin (menggantikan admin default)
+            db.execute(
+                "INSERT INTO admins (name, email, password_hash, created_at) VALUES (?,?,?,?)",
+                (
+                    "Superadmin Utama",
+                    "superadmin@example.com",
+                    generate_password_hash("superadmin123"),
+                    datetime.now().isoformat(timespec="seconds"),
+                ),
+            )
+            # Akun Admin Biasa
+            db.execute(
+                "INSERT INTO admins (name, email, password_hash, created_at) VALUES (?,?,?,?)",
+                (
+                    "Admin Biasa",
+                    "admin@example.com",
+                    generate_password_hash("admin123"),
+                    datetime.now().isoformat(timespec="seconds"),
+                ),
+            )
+            db.commit()
 
-    # seed pegawai dan user_accounts default jika kosong
-    pegawai_user = db.execute("SELECT id FROM pegawai LIMIT 1").fetchone()
-    if not pegawai_user:
-        # Buat entri di tabel 'pegawai'
-        db.execute(
-            "INSERT INTO pegawai (nama, email, jabatan, gaji, status_aktif, created_at) VALUES (?,?,?,?,?,?)",
-            (
-                "Budi Santoso",
-                "user@example.com",
-                "Karyawan",
-                5000000,
-                1, # Aktif
-                datetime.now().isoformat(timespec="seconds"),
-            ),
-        )
-        pegawai_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+        # seed pegawai dan user_accounts default jika kosong
+        pegawai_user = db.execute("SELECT id FROM pegawai LIMIT 1").fetchone()
+        if not pegawai_user:
+            # Buat entri di tabel 'pegawai'
+            db.execute(
+                "INSERT INTO pegawai (nama, email, jabatan, gaji, status_aktif, created_at) VALUES (?,?,?,?,?,?)",
+                (
+                    "Budi Santoso",
+                    "user@example.com",
+                    "Karyawan",
+                    5000000,
+                    1, # Aktif
+                    datetime.now().isoformat(timespec="seconds"),
+                ),
+            )
+            pegawai_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
 
-        # Buat entri di tabel 'user_accounts' yang terhubung ke pegawai
-        db.execute(
-            "INSERT INTO user_accounts (pegawai_id, name, email, password_hash, status_aktif, created_at) VALUES (?,?,?,?,?,?)",
-            (
-                pegawai_id,
-                "Budi Santoso",
-                "user@example.com",
-                generate_password_hash("user123"),
-                1, # Aktif
-                datetime.now().isoformat(timespec="seconds"),
-            ),
-        )
-        db.commit()
+            # Buat entri di tabel 'user_accounts' yang terhubung ke pegawai
+            db.execute(
+                "INSERT INTO user_accounts (pegawai_id, name, email, password_hash, status_aktif, created_at) VALUES (?,?,?,?,?,?)",
+                (
+                    pegawai_id,
+                    "Budi Santoso",
+                    "user@example.com",
+                    generate_password_hash("user123"),
+                    1, # Aktif
+                    datetime.now().isoformat(timespec="seconds"),
+                ),
+            )
+            db.commit()
 
 
     # seed default product visibility (reg, urg)
@@ -472,38 +475,7 @@ def ensure_admin_product_columns(db):
         print(f"[DB] ensure kolom izin produk admin dilewati: {e}")
 
 
-def ensure_windu_projects_table(db):
-    """Tabel daftar project/anak-perusahaan resmi PT Windu Karya. Dipakai sebagai sumber dropdown
-    'Perusahaan' saat Admin PT Windu Karya (atau Superadmin) menambah/mengubah pegawai, supaya nama
-    project tidak diketik manual (rawan typo/duplikat). Nama project baru WAJIB didaftarkan lebih
-    dulu lewat menu 'Kelola Project Windu Karya' oleh Superadmin atau Admin PT Windu Karya sendiri."""
-    db_type = current_app.config.get("DB_TYPE", "mysql")
-    try:
-        if db_type == "sqlite":
-            db.execute("""
-                CREATE TABLE IF NOT EXISTS windu_projects (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    nama_project TEXT NOT NULL,
-                    created_by VARCHAR(255) DEFAULT '',
-                    created_at TEXT NOT NULL
-                )
-            """)
-        else:
-            db.execute("""
-                CREATE TABLE IF NOT EXISTS windu_projects (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    nama_project VARCHAR(255) NOT NULL,
-                    created_by VARCHAR(255) DEFAULT '',
-                    created_at DATETIME NOT NULL
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
-            """)
-        db.commit()
-    except Exception as e:
-        try:
-            db.rollback()
-        except Exception:
-            pass
-        print(f"[DB] ensure tabel windu_projects dilewati: {e}")
+
 
 
 def ensure_approval_columns(db):
@@ -558,6 +530,21 @@ def ensure_approval_columns(db):
 
 def ensure_db():
     db_type = current_app.config.get("DB_TYPE", "mysql")
+    if db_type == "sqlite":
+        _ensure_db_schema()
+        return
+    db = get_db()
+    lock_name = "gajiku_schema_" + current_app.config["MYSQL_DB"][:40]
+    row = db.execute("SELECT GET_LOCK(?, 60) AS acquired", (lock_name,)).fetchone()
+    if not row or row["acquired"] != 1:
+        raise RuntimeError("Tidak dapat mengunci migrasi database. Coba startup kembali.")
+    try:
+        _ensure_db_schema()
+    finally:
+        db.execute("SELECT RELEASE_LOCK(?)", (lock_name,)).fetchone()
+
+def _ensure_db_schema():
+    db_type = current_app.config.get("DB_TYPE", "mysql")
 
     if db_type == "sqlite":
         db_path = current_app.config["DB_PATH"]
@@ -576,7 +563,7 @@ def ensure_db():
 
         init_db()
         ensure_approval_columns(get_db())
-        ensure_windu_projects_table(get_db())
+        ensure_clients_schema(get_db(), db_type)
         ensure_hak_approval_column(get_db())
         ensure_cutoff_mingguan_columns(get_db())
         ensure_admin_product_columns(get_db())
@@ -585,11 +572,14 @@ def ensure_db():
         db = get_db()
         db.execute("SELECT 1")
         ensure_approval_columns(db)
-        ensure_windu_projects_table(db)
+        ensure_clients_schema(db, db_type)
         ensure_hak_approval_column(db)
         ensure_cutoff_mingguan_columns(db)
         ensure_admin_product_columns(db)
 
+
+    from app.services.security_service import ensure_security_schema
+    ensure_security_schema(get_db(), db_type)
 
 def _migrate_users_email_unique(db):
     try:

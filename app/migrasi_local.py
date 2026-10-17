@@ -328,6 +328,8 @@ def reset_auto_increment(mysql_conn):
 
 
 def main():
+    if os.environ.get("ALLOW_LEGACY_DB_REPLACE") != "1":
+        raise SystemExit("Migrasi legacy ini menghapus isi tabel tujuan. Dinonaktifkan secara default; gunakan migrasidb/ untuk update production. Backup dan izin ALLOW_LEGACY_DB_REPLACE=1 wajib untuk pemindahan database penuh.")
     log("=" * 60)
     log("DATABASE MIGRATION: SQLite → MySQL")
     log("=" * 60)

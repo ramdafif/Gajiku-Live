@@ -1,4 +1,5 @@
 import os
+from getpass import getpass
 import sqlite3
 from werkzeug.security import generate_password_hash
 
@@ -37,13 +38,13 @@ def update_password():
         return
 
     email = input("Masukkan email akun: ").strip()
-    new_password = input("Masukkan password baru: ").strip()
+    new_password = getpass("Masukkan password baru: ")
 
     if not email or not new_password:
         print("Email dan password baru wajib diisi.")
         return
 
-    if len(new_password) < 6:
+    if not 6 <= len(new_password) <= 256:
         print("Password minimal 6 karakter.")
         return
 

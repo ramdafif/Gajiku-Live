@@ -1,0 +1,158 @@
+{% extends 'layouts/base.html' %}
+{% from 'components/macros.html' import icon, metric, page_heading, status_badge, product_badge, empty_state, avatar, csrf with context %}
+{% block title %}Dashboard Pegawai{% endblock %}
+{% block content %}
+{% call page_heading('PEGAWAI', 'Dashboard Pegawai', 'Lihat saldo gaji, plafon, dan status pengajuan.') %}
+<span class="period-chip">{{ icon('calendar') }}{{ mk|format_period_label }}</span>
+{% endcall %}
+{% if session.get('formal_active') != 1 %}
+<div class="notice notice-warning">{{ icon('info') }}<span>Akun belum aktif. Hubungi admin perusahaan untuk aktivasi sebelum mengajukan tarik gaji.</span>
+</div>
+{% endif %}
+<div class="dashboard-grid mb-24">
+  <section class="wallet-card" aria-labelledby="wallet-title">
+    <div class="wallet-orbit">
+    </div>
+    <div class="wallet-card-top">
+      <span class="wallet-label">{{ icon('wallet') }} SALDO GAJI</span>
+      <span class="wallet-cycle">{{ 'Mingguan' if limits.cutoff_mingguan else 'Siklus ' ~ limits.siklus }}</span>
+    </div>
+    <div class="wallet-main">
+      <div>
+        <p id="wallet-title">Saldo reguler tersedia</p>
+        <strong class="wallet-amount amount">{{ limits.saldo|rupiah }}</strong>
+        <span class="wallet-caption">Dari plafon {{ limits.plafon|rupiah }} {{ 'minggu' if limits.cutoff_mingguan else 'periode' }} ini</span>
+      </div>
+      <a href="{{ url_for('web.tarik_gaji') }}" class="button button-white">Tarik gaji {{ icon('arrow-up-right') }}</a>
+    </div>
+    <div class="wallet-progress">
+      <div class="progress-track">
+        <span style="width:{{ [100, ((limits.total_sukses / limits.plafon * 100) if limits.plafon else 0)]|min|round }}%">
+        </span>
+      </div>
+      <div class="wallet-progress-label">
+        <span>{{ limits.total_sukses|rupiah }} digunakan &amp; diproses</span>
+        <span>Hari ke-{{ limits.hari_ke }}</span>
+      </div>
+    </div>
+    <div class="wallet-bottom">{{ icon('shield') }}<span>Plafon dan saldo mengikuti ketentuan perusahaan.</span>
+    </div>
+  </section>
+  <section class="card account-card">
+    <div class="card-body">
+      <div class="inline spaced">
+        <p class="eyebrow">PROFIL PEGAWAI</p>
+        <button type="button" class="icon-button" data-dialog="avatar-dialog" aria-label="Kelola foto profil">{{ icon('edit') }}</button>
+      </div>
+      <div class="account-person">{{ avatar(account_name, avatar_url, 'avatar-large') }}<h2>{{ account_name }}</h2>
+        <p>{{ account_company or 'Perusahaan belum tercatat' }}</p>
+      </div>
+      <dl class="detail-list">
+        <div>
+          <dt>ID pegawai</dt>
+          <dd>{{ pegawai_info.id_pegawai if pegawai_info else '-' }}</dd>
+        </div>
+        <div>
+          <dt>Rekening utama</dt>
+          <dd>{{ (pegawai_info.no_rekening or '-') if pegawai_info else '-' }}</dd>
+        </div>
+        <div>
+          <dt>Status akun</dt>
+          <dd>
+            <span class="badge {{ 'badge-success' if session.get('formal_active') == 1 else 'badge-warning' }}">
+              <span class="status-dot">
+              </span>{{ 'Aktif' if session.get('formal_active') == 1 else 'Menunggu aktivasi' }}</span>
+          </dd>
+        </div>
+      </dl>
+    </div>
+  </section>
+</div>
+<div class="metric-grid">
+  {{ metric('Plafon ' ~ ('mingguan' if limits.cutoff_mingguan else 'periode'), limits.plafon|rupiah, 'Batas akses gaji periode berjalan', 'wallet', 'accent-blue') }}
+  {{ metric('Akumulasi per hari', limits.limit_harian|rupiah, 'Hari ke-' ~ limits.hari_ke ~ ' dari ' ~ limits.limit_period_days, 'calendar') }}
+  {{ metric('Pengajuan selesai', total_nom|rupiah, 'Dari transaksi terbaru yang selesai', 'check', 'accent-green') }}
+  {{ metric('Sisa plafon URG' if 'urg' in enabled_products else 'Sisa plafon', sisa_plafon_urg|rupiah, 'Sesuai produk aktif perusahaan', 'spark', 'accent-amber') }}
+</div>
+<div class="dashboard-grid dashboard-lower">
+  <section class="card">
+    <div class="card-header">
+      <div>
+        <h2>Aktivitas terbaru</h2>
+        <p>Pengajuan gaji dan perkembangannya.</p>
+      </div>
+      <a class="text-link" href="{{ url_for('web.riwayat') }}">Lihat semua {{ icon('arrow-up-right') }}</a>
+    </div>
+    {% if rows %}
+    <div class="table-scroll" tabindex="0" role="region" aria-label="Transaksi terbaru">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th scope="col">Transaksi</th>
+            <th scope="col">Nominal</th>
+            <th scope="col">Status</th>
+            <th scope="col" class="text-right">Aksi</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows[:8] %}
+          <tr data-tx-id="{{ row.id }}" data-tx-status="{{ row.status }}">
+            <td>
+              <div class="inline">{{ product_badge(row.product) }}<span>
+                  <strong>Tarik gaji {{ (row.product or 'reg')|upper }}</strong>
+                  <small>{{ row.tanggal|indo_date }} &middot; #{{ row.id }}</small>
+                </span>
+              </div>
+            </td>
+            <td>
+              <span class="amount">{{ row.nominal|rupiah }}</span>
+              <small>Biaya {{ row.admin_fee|rupiah }}</small>
+            </td>
+            <td>{{ status_badge(row.status) }}</td>
+            <td class="text-right">
+              {% if row.status == 'on-proses' %}
+              <form action="{{ url_for('web.tx_cancel', txid=row.id) }}" method="post" data-cancel-form{% if not remaining_map.get(row.id, 0) %} hidden{% endif %} data-confirm="Batalkan pengajuan ini? Tindakan akan diperiksa kembali oleh server." data-confirm-title="Batalkan pengajuan?">{{ csrf() }}<button type="submit" class="button button-danger button-small">Batal <span data-countdown="{{ remaining_map.get(row.id, 0) }}">{{ remaining_map.get(row.id, 0) }}d</span>
+                </button>
+              </form>
+              <span class="text-small text-muted" data-processing-note{% if remaining_map.get(row.id, 0) %} hidden{% endif %}>Menunggu persetujuan</span>
+              {% else %}
+              <span class="text-muted">&mdash;</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}{{ empty_state('Belum ada pengajuan', 'Ajukan melalui menu Tarik gaji.', 'receipt') }}{% endif %}
+  </section>
+  <aside class="stack">
+    <section class="guide-card">
+      <span class="guide-icon">{{ icon('spark') }}</span>
+      <p class="eyebrow">PANDUAN PENGAJUAN</p>
+      <h2>Cara Tarik Gaji</h2>
+      <p>Pilih nominal dan periksa biaya sebelum mengirim pengajuan.</p>
+      <a href="{{ url_for('web.tarik_gaji') }}">Tarik gaji {{ icon('arrow-right') }}</a>
+    </section>
+    <div class="mini-note">{{ icon('info') }}<p>Data rekening kurang tepat? Hubungi admin perusahaan untuk memperbaruinya.</p>
+    </div>
+  </aside>
+</div>
+<dialog id="avatar-dialog" class="dialog dialog-small" aria-labelledby="avatar-title">
+  <div class="dialog-header">
+    <h2 id="avatar-title">Foto profil</h2>
+    <button type="button" class="icon-button" data-close-dialog aria-label="Tutup">{{ icon('close') }}</button>
+  </div>
+  <form action="{{ url_for('web.avatar_upload') }}" method="post" enctype="multipart/form-data" class="form-stack" data-loading-form>{{ csrf() }}<div class="field">
+      <label for="avatar-file">Pilih foto</label>
+      <input type="file" id="avatar-file" name="avatar" accept="image/jpeg,image/png,image/gif,image/webp" data-max-bytes="2097152" required>
+      <p class="field-hint">Gunakan JPG, PNG, GIF, atau WebP. Maksimal 2 MB.</p>
+    </div>
+    <button class="button button-primary" type="submit">{{ icon('upload') }} Simpan foto</button>
+  </form>
+  {% if avatar_url %}
+  <form action="{{ url_for('web.avatar_delete') }}" method="post" class="mt-16" data-confirm="Foto profil akan dihapus." data-confirm-title="Hapus foto profil?">{{ csrf() }}<button class="button button-danger button-full" type="submit">Hapus foto</button>
+  </form>
+  {% endif %}
+</dialog>
+{% endblock %}

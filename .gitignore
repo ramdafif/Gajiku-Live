@@ -23,6 +23,8 @@ instance/
 *.db
 *.sqlite
 *.sqlite3
+/gajiku_db.sql
+app/static/uploads/
 
 # Ini akan mengabaikan seluruh isi folder data/ tempat database lu berada
 data/

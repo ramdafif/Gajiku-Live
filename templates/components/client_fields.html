@@ -1,0 +1,72 @@
+{% macro client_fields(record, prefix) %}
+<div class="form-grid">
+  <h3 class="form-section-title">Informasi perusahaan</h3>
+  <div class="field field-full">
+    <label for="{{ prefix }}-name">Nama perusahaan / PT</label>
+    <input id="{{ prefix }}-name" name="name" required maxlength="255" value="{{ record.name if record else '' }}"{% if record %} readonly{% endif %}>
+    {% if record %}
+    <p class="field-hint">Nama PT dikunci untuk menjaga relasi data.</p>
+    {% endif %}
+  </div>
+  <div class="field">
+    <label for="{{ prefix }}-email">Email perusahaan</label>
+    <input type="email" id="{{ prefix }}-email" name="email" maxlength="255" value="{{ (record.email or '') if record else '' }}">
+  </div>
+  <div class="field">
+    <label for="{{ prefix }}-phone">Telepon perusahaan</label>
+    <input type="tel" id="{{ prefix }}-phone" name="phone" maxlength="50" value="{{ (record.phone or '') if record else '' }}">
+  </div>
+  <div class="field field-full">
+    <label for="{{ prefix }}-address">Alamat</label><textarea id="{{ prefix }}-address" name="address" maxlength="5000" rows="2">{{ (record.address or '') if record else '' }}</textarea></div>
+  <div class="field field-full">
+    <label for="{{ prefix }}-npwp">NPWP</label>
+    <input id="{{ prefix }}-npwp" name="npwp" maxlength="50" value="{{ (record.npwp or '') if record else '' }}">
+  </div>
+  <h3 class="form-section-title">Penanggung jawab (PIC)</h3>
+  {% for field,label in [('pic_name','Nama PIC'),('pic_role','Jabatan PIC'),('pic_email','Email PIC'),('pic_phone','Telepon PIC')] %}
+  <div class="field">
+    <label for="{{ prefix }}-{{ field }}">{{ label }}</label>
+    <input id="{{ prefix }}-{{ field }}" name="{{ field }}" type="{{ 'email' if field == 'pic_email' else 'tel' if field == 'pic_phone' else 'text' }}" maxlength="{{ 100 if field == 'pic_role' else 50 if field == 'pic_phone' else 255 }}" value="{{ (record[field] or '') if record else '' }}">
+  </div>
+  {% endfor %}
+  <h3 class="form-section-title">MoU &amp; pengelolaan project</h3>
+  <div class="field field-full">
+    <label for="{{ prefix }}-mou-number">Nomor MoU</label>
+    <input id="{{ prefix }}-mou-number" name="mou_number" maxlength="255" value="{{ (record.mou_number or '') if record else '' }}">
+  </div>
+  <div class="field">
+    <label for="{{ prefix }}-mou-start">Mulai MoU</label>
+    <input id="{{ prefix }}-mou-start" name="mou_start" type="date" value="{{ (record.mou_start or '') if record else '' }}">
+  </div>
+  <div class="field">
+    <label for="{{ prefix }}-mou-end">Akhir MoU</label>
+    <input id="{{ prefix }}-mou-end" name="mou_end" type="date" value="{{ (record.mou_end or '') if record else '' }}">
+  </div>
+  <label class="check-row field-full">
+    <input type="checkbox" name="allow_projects" value="1"{% if record and record.allow_projects %} checked{% endif %}>
+    <span>
+      <strong>Izinkan pengelolaan project (Allow Projects)</strong>
+      <small>Aktifkan hanya jika sesuai MoU. Project yang sedang dipakai pegawai tidak dapat dinonaktifkan begitu saja.</small>
+    </span>
+  </label>
+  <div class="field field-full">
+    <label for="{{ prefix }}-notes">Catatan</label><textarea id="{{ prefix }}-notes" name="notes" maxlength="5000" rows="3">{{ (record.notes or '') if record else '' }}</textarea></div>
+</div>
+{% endmacro %}
+
+{% macro project_fields(record, prefix) %}
+<div class="form-grid">
+  <div class="field field-full">
+    <label for="{{ prefix }}-name">Nama project</label>
+    <input id="{{ prefix }}-name" name="name" required maxlength="255" value="{{ record.name if record else '' }}">
+  </div>
+  {% for field,label in [('location','Lokasi'),('pic_name','Nama PIC'),('pic_email','Email PIC'),('pic_phone','Telepon PIC')] %}
+  <div class="field">
+    <label for="{{ prefix }}-{{ field }}">{{ label }}</label>
+    <input id="{{ prefix }}-{{ field }}" name="{{ field }}" type="{{ 'email' if field == 'pic_email' else 'tel' if field == 'pic_phone' else 'text' }}" maxlength="{{ 50 if field == 'pic_phone' else 255 }}" value="{{ (record[field] or '') if record else '' }}">
+  </div>
+  {% endfor %}
+  <div class="field field-full">
+    <label for="{{ prefix }}-notes">Catatan</label><textarea id="{{ prefix }}-notes" name="notes" maxlength="5000" rows="3">{{ (record.notes or '') if record else '' }}</textarea></div>
+</div>
+{% endmacro %}

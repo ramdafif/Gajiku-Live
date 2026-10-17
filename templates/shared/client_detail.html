@@ -1,0 +1,222 @@
+{% extends 'layouts/base.html' %}
+{% from 'components/macros.html' import icon, csrf, page_heading, empty_state, avatar with context %}
+{% from 'components/client_fields.html' import client_fields, project_fields with context %}
+{% block title %}{{ client.name }}{% endblock %}
+{% block breadcrumb %}{{ 'Detail perusahaan' if superuser else 'Kelola project' }}{% endblock %}
+{% block content %}
+{% if superuser %}
+<a href="{{ url_for('clients.superadmin_clients') }}" class="back-link">{{ icon('arrow-left') }} Kembali ke daftar perusahaan</a>
+{% endif %}
+{% call page_heading('PERUSAHAAN', client.name, 'Data perusahaan dan project.') %}{% if superuser %}
+<button type="button" class="button button-secondary" data-dialog="client-edit">{{ icon('edit') }} Edit perusahaan</button>
+{% endif %}{% if client.allow_projects %}
+<button type="button" class="button button-primary" data-dialog="project-add">{{ icon('plus') }} Tambah project</button>
+{% endif %}{% endcall %}
+<div class="client-overview mb-24">
+  <section class="card">
+    <div class="card-header">
+      <h2>Profil perusahaan</h2>
+      <span class="company-avatar">{{ icon('building') }}</span>
+    </div>
+    <div class="card-body">
+      <dl class="detail-list">
+        <div>
+          <dt>Email</dt>
+          <dd>{{ client.email or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Telepon</dt>
+          <dd>{{ client.phone or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Alamat</dt>
+          <dd>{{ client.address or '-' }}</dd>
+        </div>
+        <div>
+          <dt>NPWP</dt>
+          <dd>{{ client.npwp or '-' }}</dd>
+        </div>
+      </dl>
+    </div>
+  </section>
+  <section class="card">
+    <div class="card-header">
+      <h2>Penanggung jawab</h2>{{ icon('user') }}</div>
+    <div class="card-body">
+      <dl class="detail-list">
+        <div>
+          <dt>Nama PIC</dt>
+          <dd>{{ client.pic_name or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Jabatan</dt>
+          <dd>{{ client.pic_role or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Email PIC</dt>
+          <dd>{{ client.pic_email or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Telepon PIC</dt>
+          <dd>{{ client.pic_phone or '-' }}</dd>
+        </div>
+      </dl>
+    </div>
+  </section>
+  <section class="card">
+    <div class="card-header">
+      <h2>MoU &amp; project</h2>{{ icon('receipt') }}</div>
+    <div class="card-body">
+      {% if superuser %}
+      <span class="badge {{ 'badge-success' if mou_status == 'valid' else 'badge-warning' if mou_status == 'soon' else 'badge-neutral' }}">{{ mou_label }}</span>
+      {% endif %}
+      <dl class="detail-list">
+        <div>
+          <dt>Nomor MoU</dt>
+          <dd>{{ client.mou_number or '-' }}</dd>
+        </div>
+        <div>
+          <dt>Periode</dt>
+          <dd>{{ client.mou_start|indo_date if client.mou_start else '-' }}<br> {{ client.mou_end|indo_date if client.mou_end else '-' }}</dd>
+        </div>
+        <div>
+          <dt>Pengelolaan project</dt>
+          <dd>
+            <span class="badge {{ 'badge-blue' if client.allow_projects else 'badge-neutral' }}">{{ 'Allow Projects' if client.allow_projects else 'Disallow Projects' }}</span>
+          </dd>
+        </div>
+      </dl>
+    </div>
+  </section>
+</div>
+<section class="card mb-24">
+  <div class="card-header">
+    <div>
+      <h2>Project perusahaan</h2>
+      <p>{{ 'Project resmi yang dapat dipilih pada data pegawai.' if client.allow_projects else 'Pengelolaan project tidak diizinkan oleh konfigurasi perusahaan.' }}</p>
+    </div>
+    <span class="badge badge-neutral">{{ projects|length }} project</span>
+  </div>
+  {% if projects %}
+  <div class="table-scroll" tabindex="0" role="region" aria-label="Daftar project">
+    <table class="data-table" data-paginate="10">
+      <thead>
+        <tr>
+          <th>Project</th>
+          <th>Lokasi</th>
+          <th>Penanggung jawab</th>
+          <th>Catatan</th>
+          <th class="text-right">Tindakan</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for project in projects %}
+        <tr>
+          <td>
+            <strong>{{ project.name }}</strong>
+          </td>
+          <td>{{ project.location or '-' }}</td>
+          <td>{{ project.pic_name or '-' }}<small>{{ project.pic_email or '-' }}</small>
+            <small>{{ project.pic_phone or '-' }}</small>
+          </td>
+          <td>
+            <span class="cell-note">{{ project.notes or '-' }}</span>
+          </td>
+          <td>
+            <div class="row-actions">
+              {% if client.allow_projects %}
+              <button type="button" class="button button-secondary button-small" data-dialog="project-edit" data-form-action="{{ url_for('clients.superadmin_project_edit', client_id=client.id, project_id=project.id) if superuser else url_for('clients.admin_project_edit', project_id=project.id) }}" data-form-values='{{ project|tojson }}'>{{ icon('edit') }} Edit</button>
+              <form action="{{ url_for('clients.superadmin_project_delete', client_id=client.id, project_id=project.id) if superuser else url_for('clients.admin_project_delete', project_id=project.id) }}" method="post" data-confirm="Hapus project {{ project.name }}? Penghapusan akan ditolak server jika project masih dipakai pegawai." data-confirm-title="Hapus project?">{{ csrf() }}<button type="submit" class="icon-button text-danger" aria-label="Hapus project {{ project.name }}">{{ icon('trash') }}</button>
+              </form>
+              {% else %}
+              <span class="text-muted">Tidak diizinkan</span>
+              {% endif %}
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}{{ empty_state('Belum ada project', 'Tambahkan project sesuai MoU sebelum menautkan data pegawai.' if client.allow_projects else 'Perusahaan ini tidak menggunakan pengelompokan project.', 'folder') }}{% endif %}
+</section>
+{% if superuser %}
+<section class="card">
+  <div class="card-header">
+    <div>
+      <h2>Admin terhubung</h2>
+      <p>Akun yang ditautkan dengan perusahaan ini.</p>
+    </div>
+    <a href="{{ url_for('web.superadmin_admins', company=client.name) }}" class="text-link">Kelola admin {{ icon('arrow-up-right') }}</a>
+  </div>
+  {% if admins %}
+  <div class="table-scroll" tabindex="0" role="region" aria-label="Admin perusahaan">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Admin</th>
+          <th>Peran</th>
+          <th>Status</th>
+          <th>Hak persetujuan</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for admin in admins %}
+        <tr>
+          <td>
+            <strong>{{ admin.name }}</strong>
+            <small>{{ admin.email }}</small>
+          </td>
+          <td>{{ admin.role }}</td>
+          <td>
+            <span class="badge {{ 'badge-success' if admin.status_aktif else 'badge-neutral' }}">{{ 'Aktif' if admin.status_aktif else 'Tidak aktif' }}</span>
+          </td>
+          <td>{{ 'Diizinkan' if admin.hak_approval else 'Tidak diizinkan' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}{{ empty_state('Belum ada admin terhubung', 'Tambahkan akun melalui menu Kelola admin.', 'shield') }}{% endif %}
+</section>
+<dialog id="client-edit" class="dialog" aria-labelledby="client-edit-title">
+  <div class="dialog-header">
+    <h2 id="client-edit-title">Edit perusahaan</h2>
+    <button type="button" class="icon-button" data-close-dialog aria-label="Tutup">{{ icon('close') }}</button>
+  </div>
+  <form action="{{ url_for('clients.superadmin_client_detail', client_id=client.id) }}" method="post" data-mou-range data-confirm="Informasi perusahaan dan konfigurasi MoU akan diperbarui." data-confirm-title="Simpan detail perusahaan?">{{ csrf() }}{{ client_fields(client, 'client-edit') }}<div class="dialog-actions">
+      <button type="button" class="button button-secondary" data-close-dialog>Batal</button>
+      <button type="submit" class="button button-primary">Simpan perubahan</button>
+    </div>
+  </form>
+</dialog>
+{% endif %}
+{% if client.notes %}
+<div class="notice notice-info mt-24">{{ icon('info') }}<span>{{ client.notes }}</span>
+</div>
+{% endif %}
+{% if client.allow_projects %}
+<dialog id="project-add" class="dialog" aria-labelledby="project-add-title">
+  <div class="dialog-header">
+    <h2 id="project-add-title">Tambah project</h2>
+    <button type="button" class="icon-button" data-close-dialog aria-label="Tutup">{{ icon('close') }}</button>
+  </div>
+  <form action="{{ url_for('clients.superadmin_project_add', client_id=client.id) if superuser else url_for('clients.admin_project_add') }}" method="post" data-loading-form>{{ csrf() }}{{ project_fields(none, 'project-add') }}<div class="dialog-actions">
+      <button type="button" class="button button-secondary" data-close-dialog>Batal</button>
+      <button class="button button-primary" type="submit">Simpan project</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="project-edit" class="dialog" aria-labelledby="project-edit-title">
+  <div class="dialog-header">
+    <h2 id="project-edit-title">Edit project</h2>
+    <button type="button" class="icon-button" data-close-dialog aria-label="Tutup">{{ icon('close') }}</button>
+  </div>
+  <form method="post" data-loading-form>{{ csrf() }}{{ project_fields(none, 'project-edit') }}<div class="dialog-actions">
+      <button type="button" class="button button-secondary" data-close-dialog>Batal</button>
+      <button class="button button-primary" type="submit">Simpan perubahan</button>
+    </div>
+  </form>
+</dialog>
+{% endif %}
+{% endblock %}

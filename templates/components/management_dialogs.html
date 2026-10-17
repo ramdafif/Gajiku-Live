@@ -1,0 +1,35 @@
+{% from 'components/macros.html' import icon, csrf with context %}
+<dialog id="products-dialog" class="dialog dialog-small" aria-labelledby="products-title">
+  <div class="dialog-header">
+    <h2 id="products-title">Produk &amp; biaya</h2>
+    <button type="button" class="icon-button" data-close-dialog aria-label="Tutup">{{ icon('close') }}</button>
+  </div>
+  <p>Pengaturan produk global. Konfigurasi perusahaan tetap mengikuti kebijakan backend.</p>
+  <form action="{{ url_for('web.superadmin_products') }}" method="post" data-confirm="Pengaturan produk global dan PPN akan diperbarui." data-confirm-title="Simpan pengaturan produk?">{{ csrf() }}<label class="switch-row">
+      <span>
+        <strong>Reguler (REG)</strong>
+        <small>Akses dari saldo terakumulasi.</small>
+      </span>
+      <input name="products" value="reg" type="checkbox"{% if 'reg' in enabled_products %} checked{% endif %}>
+    </label>
+    <label class="switch-row">
+      <span>
+        <strong>Urgent (URG)</strong>
+        <small>Akses dari sisa plafon.</small>
+      </span>
+      <input name="products" value="urg" type="checkbox"{% if 'urg' in enabled_products %} checked{% endif %}>
+    </label>
+    <label class="switch-row">
+      <span>
+        <strong>PPN biaya admin</strong>
+        <small>Tambahan PPN 11% sesuai pengaturan server.</small>
+      </span>
+      <input name="ppn_enabled" value="1" type="checkbox"{% if ppn_enabled %} checked{% endif %}>
+    </label>
+    <div class="dialog-actions">
+      <button type="button" class="button button-secondary" data-close-dialog>Batal</button>
+      <button type="submit" class="button button-primary">Simpan pengaturan</button>
+    </div>
+  </form>
+</dialog>
+{% include 'components/export_dialog.html' %}

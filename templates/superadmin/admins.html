@@ -1,0 +1,114 @@
+{% extends 'layouts/base.html' %}
+{% from 'components/macros.html' import icon, csrf, page_heading, empty_state, avatar with context %}
+{% from 'components/admin_fields.html' import admin_fields with context %}
+{% block title %}Kelola Admin{% endblock %}
+{% block breadcrumb %}Kelola admin{% endblock %}
+{% block content %}
+{% call page_heading('ADMIN', 'Kelola Admin', 'Kelola akun admin, akses perusahaan, dan hak persetujuan.') %}
+<button type="button" class="button button-primary" data-dialog="admin-add">{{ icon('plus') }} Tambah admin</button>
+{% endcall %}
+<div class="notice notice-info">{{ icon('shield') }}<span>Hak persetujuan dan cakupan perusahaan selalu diverifikasi server. Perubahan konfigurasi perusahaan dapat mengikuti akun admin lain yang sudah terdaftar.</span>
+</div>
+<section class="card">
+  <div class="card-header">
+    <div>
+      <h2>Daftar admin</h2>
+      <p>Akun yang tercatat pada database aplikasi.</p>
+    </div>
+    <span class="badge badge-neutral">{{ total }} akun</span>
+  </div>
+  <form method="get" class="filter-bar">
+    <div class="field field-search">
+      <label for="admin-q">Cari admin</label>
+      <div class="input-wrap has-leading">{{ icon('search') }}<input type="search" name="q" id="admin-q" value="{{ q }}" placeholder="Nama, email, atau perusahaan...">
+      </div>
+    </div>
+    <div class="field">
+      <label for="admin-company">Perusahaan</label>
+      <select name="company" id="admin-company">
+        <option value="">Semua perusahaan</option>
+        {% for company in companies %}
+        <option value="{{ company }}"{% if company == f_company %} selected{% endif %}>{{ company }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <button type="submit" class="button button-primary">{{ icon('filter') }} Terapkan</button>
+    <a href="{{ url_for('web.superadmin_admins') }}" class="button button-secondary">Reset</a>
+  </form>
+  {% if rows %}
+  <div class="table-scroll" tabindex="0" role="region" aria-label="Daftar admin">
+    <table class="data-table" data-paginate="10">
+      <thead>
+        <tr>
+          <th>Admin</th>
+          <th>Perusahaan</th>
+          <th>Status</th>
+          <th>Hak persetujuan</th>
+          <th>Cutoff</th>
+          <th>Produk</th>
+          <th class="text-right">Tindakan</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td>
+            <div class="cell-person">{{ avatar(row.name) }}<span>
+                <strong>{{ row.name }}</strong>
+                <small>{{ row.email }}</small>
+                <small>{{ row.no_telp or '-' }}</small>
+              </span>
+            </div>
+          </td>
+          <td>{{ row.company or 'Tidak ditautkan' }}</td>
+          <td>
+            <span class="badge {{ 'badge-success' if row.status_aktif == 1 else 'badge-neutral' }}">{{ 'Aktif' if row.status_aktif == 1 else 'Tidak aktif' }}</span>
+          </td>
+          <td>
+            <span class="badge {{ 'badge-blue' if row.hak_approval else 'badge-neutral' }}">{{ 'Diizinkan' if row.hak_approval else 'Tanpa approval' }}</span>
+          </td>
+          <td>{{ ['Senin','Selasa','Rabu','Kamis','Jumat','Sabtu','Minggu'][row.cutoff_hari|int] if row.cutoff_mingguan_aktif else 'Bulanan' }}</td>
+          <td>
+            {% if row.produk_reg_aktif %}
+            <span class="badge badge-blue">REG</span>
+            {% endif %} {% if row.produk_urg_aktif %}
+            <span class="badge badge-urgent">URG</span>
+            {% endif %}
+          </td>
+          <td>
+            <div class="row-actions">
+              <button type="button" class="button button-secondary button-small" data-dialog="admin-edit" data-form-action="{{ url_for('web.superadmin_edit_admin', admin_id=row.id) }}" data-form-values='{{ {'nama':row.name,'email':row.email,'perusahaan':row.company,'no_telp':row.no_telp,'status':row.status_aktif,'hak_approval':row.hak_approval,'cutoff_mingguan_aktif':row.cutoff_mingguan_aktif,'cutoff_hari':row.cutoff_hari,'produk_reg_aktif':row.produk_reg_aktif,'produk_urg_aktif':row.produk_urg_aktif}|tojson }}'>{{ icon('edit') }} Edit</button>
+              <form action="{{ url_for('web.superadmin_delete_admin', admin_id=row.id) }}" method="post" data-confirm="Hapus akun {{ row.name }}? Server akan memeriksa perlindungan akun dan cakupan approval sebelum menghapus." data-confirm-title="Hapus akun admin?">{{ csrf() }}<button class="icon-button text-danger" type="submit" aria-label="Hapus admin {{ row.name }}">{{ icon('trash') }}</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}{{ empty_state('Tidak ada admin yang cocok', 'Coba kata kunci lain atau tambahkan akun admin baru.', 'shield') }}{% endif %}
+</section>
+<dialog class="dialog" id="admin-add" aria-labelledby="admin-add-title">
+  <div class="dialog-header">
+    <h2 id="admin-add-title">Tambah admin perusahaan</h2>
+    <button type="button" class="icon-button" data-close-dialog aria-label="Tutup">{{ icon('close') }}</button>
+  </div>
+  <form action="{{ url_for('web.superadmin_admins_add') }}" method="post" data-loading-form>{{ csrf() }}{{ admin_fields(none, 'admin-add', companies) }}<div class="dialog-actions">
+      <button type="button" class="button button-secondary" data-close-dialog>Batal</button>
+      <button class="button button-primary" type="submit">Buat akun admin</button>
+    </div>
+  </form>
+</dialog>
+<dialog class="dialog" id="admin-edit" aria-labelledby="admin-edit-title">
+  <div class="dialog-header">
+    <h2 id="admin-edit-title">Edit akun admin</h2>
+    <button type="button" class="icon-button" data-close-dialog aria-label="Tutup">{{ icon('close') }}</button>
+  </div>
+  <form method="post" data-confirm="Data admin dan konfigurasi perusahaan akan diperbarui. Perubahan hak akses dapat memengaruhi alur approval." data-confirm-title="Simpan perubahan admin?">{{ csrf() }}{{ admin_fields(none, 'admin-edit', companies, false) }}<div class="dialog-actions">
+      <button type="button" class="button button-secondary" data-close-dialog>Batal</button>
+      <button class="button button-primary" type="submit">Simpan perubahan</button>
+    </div>
+  </form>
+</dialog>
+{% endblock %}

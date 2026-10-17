@@ -1,0 +1,113 @@
+{% extends 'layouts/base.html' %}
+{% from 'components/macros.html' import icon, csrf, password_field, page_heading, avatar with context %}
+{% block title %}Pengaturan Akun{% endblock %}
+{% block breadcrumb %}Pengaturan akun{% endblock %}
+{% block content %}
+{{ page_heading('AKUN', 'Pengaturan Akun', 'Kelola profil, keamanan, dan pengaturan sesuai hak akses.') }}
+<div class="settings-grid">
+  <aside class="stack">
+    <section class="card">
+      <div class="card-body">
+        <div class="account-person">{{ avatar(display_name, '', 'avatar-large') }}<h2>{{ display_name }}</h2>
+          <p>{{ session.get('admin_email') or session.get('formal_email') or '-' }}</p>
+          <span class="badge badge-blue mt-16">{{ role_label }}</span>
+        </div>
+        <dl class="detail-list">
+          <div>
+            <dt>Perusahaan</dt>
+            <dd>{{ session.get('company') or ('Lintas perusahaan' if superuser else 'Sesuai data pegawai') }}</dd>
+          </div>
+          <div>
+            <dt>Akses akun</dt>
+            <dd>Terautentikasi</dd>
+          </div>
+        </dl>
+      </div>
+    </section>
+    <section class="card">
+      <div class="card-body">
+        <h3>Foto profil</h3>
+        <form action="{{ url_for('web.avatar_upload') }}" method="post" enctype="multipart/form-data" class="form-stack mt-16" data-loading-form>{{ csrf() }}<div class="field">
+            <label for="account-avatar">Pilih gambar profil</label>
+            <input type="file" name="avatar" id="account-avatar" accept="image/jpeg,image/png,image/gif,image/webp" data-max-bytes="2097152" required>
+            <p class="field-hint">JPG, PNG, GIF, atau WebP. Maksimal 2 MB.</p>
+          </div>
+          <button class="button button-secondary button-full" type="submit">{{ icon('upload') }} Unggah foto</button>
+        </form>
+        <form action="{{ url_for('web.avatar_delete') }}" method="post" class="mt-16" data-confirm="Foto profil tersimpan akan dihapus." data-confirm-title="Hapus foto profil?">{{ csrf() }}<button class="button button-ghost button-full text-danger" type="submit">Hapus foto tersimpan</button>
+        </form>
+        <p class="field-hint">Foto tersimpan ditampilkan pada halaman beranda.</p>
+      </div>
+    </section>
+  </aside>
+  <div class="stack">
+    <section class="card">
+      <div class="card-header">
+        <div>
+          <h2>Keamanan akun</h2>
+          <p>Perbarui password secara berkala dan jangan bagikan ke siapa pun.</p>
+        </div>{{ icon('lock') }}</div>
+      <div class="card-body">
+        {% if env_account|default(false) %}
+        <div class="notice notice-info">{{ icon('info') }}<span>
+            <strong>{{ 'Akun Superadmin ENV' if superuser else 'Akun Admin ENV' }}</strong>. Password dikelola melalui konfigurasi deployment. Form perubahan password tidak tersedia untuk akun ini.</span>
+        </div>
+        {% else %}
+        <form method="post" class="form-stack" data-loading-form>{{ csrf() }}{% if staff %}
+          <input type="hidden" name="form_type" value="password">
+          {% endif %}{{ password_field('old_password', 'Password saat ini', 'current-password', 1) }}{{ password_field('new_password', 'Password baru') }}{{ password_field('new_password2', 'Konfirmasi password baru') }}<p class="field-hint">Minimal 6 karakter. Gunakan kombinasi kata dan karakter yang sulit ditebak.</p>
+          <div class="form-inline-end">
+            <button type="submit" class="button button-primary" data-loading-text="Menyimpan...">Simpan password {{ icon('arrow-right') }}</button>
+          </div>
+        </form>
+        {% endif %}
+      </div>
+    </section>
+    {% if superuser %}
+    <section class="card">
+      <div class="card-header">
+        <div>
+          <h2>PPN biaya admin</h2>
+          <p>Pengaturan pajak untuk perhitungan biaya pengajuan.</p>
+        </div>{{ icon('receipt') }}</div>
+      <form method="post" class="card-body" data-confirm="Pengaturan PPN biaya admin akan diperbarui secara global." data-confirm-title="Ubah pengaturan PPN?">{{ csrf() }}<input type="hidden" name="form_type" value="ppn">
+        <label class="switch-row">
+          <span>
+            <strong>Aktifkan PPN 11%</strong>
+            <small>Diterapkan di atas biaya admin dan dibulatkan oleh server.</small>
+          </span>
+          <input type="checkbox" name="ppn_enabled" value="1"{% if ppn_enabled %} checked{% endif %}>
+        </label>
+        <div class="form-inline-end mt-16">
+          <button type="submit" class="button button-primary">Simpan pengaturan</button>
+        </div>
+      </form>
+    </section>
+    <section class="card">
+      <div class="card-header">
+        <div>
+          <h2>Pengaturan operasional</h2>
+          <p>Konfigurasi global yang berdampak pada operasional aplikasi.</p>
+        </div>{{ icon('settings') }}</div>
+      <form method="post" class="card-body" data-confirm="Konfigurasi force time limit akan diubah secara global. Pastikan Anda memahami dampaknya pada layanan." data-confirm-title="Ubah konfigurasi global?">{{ csrf() }}<input type="hidden" name="form_type" value="runtime_force_limit">
+        <input type="hidden" name="force_confirmed" value="1">
+        <label class="switch-row">
+          <span>
+            <strong>Force time limit</strong>
+            <small>Pengaturan global sesuai implementasi backend saat ini.</small>
+          </span>
+          <input type="checkbox" name="runtime_force_limit" value="1"{% if runtime_force_limit %} checked{% endif %}>
+        </label>
+        <div class="notice notice-warning">{{ icon('info') }}<span>Hanya ubah setelah berkoordinasi dengan tim operasional. Konfirmasi akan diminta sebelum penyimpanan.</span>
+        </div>
+        <div class="form-inline-end">
+          <button type="submit" class="button button-secondary">Simpan konfigurasi</button>
+        </div>
+      </form>
+    </section>
+    {% endif %}
+    <div class="mini-note">{{ icon('shield') }}<p>Gajiku tidak pernah meminta password melalui pesan pribadi. Data pegawai dan rekening dikelola admin perusahaan.</p>
+    </div>
+  </div>
+</div>
+{% endblock %}

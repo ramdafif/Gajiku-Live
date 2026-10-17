@@ -33,14 +33,17 @@ def send_email(subject: str, body: str, to_list=None, attachments=None):
         smtp_port = int(current_app.config.get("SMTP_PORT") or 465)
         smtp_host = current_app.config.get("SMTP_HOST")
 
-        with smtplib.SMTP_SSL(
-            smtp_host,
-            smtp_port,  # <--- Di sini diganti pakai variabel smtp_port yang udah jadi int
-            context=context,
-            timeout=20,
-        ) as s:
-            s.login(current_app.config.get("SMTP_USER"), current_app.config.get("SMTP_PASS"))
-            s.send_message(msg)
+        if smtp_port == 465:
+            connection = smtplib.SMTP_SSL(smtp_host, smtp_port, context=context, timeout=20)
+        else:
+            connection = smtplib.SMTP(smtp_host, smtp_port, timeout=20)
+        with connection as smtp:
+            if smtp_port != 465:
+                smtp.ehlo()
+                smtp.starttls(context=context)
+                smtp.ehlo()
+            smtp.login(current_app.config.get("SMTP_USER"), current_app.config.get("SMTP_PASS"))
+            smtp.send_message(msg)
         return True
     except Exception as e:
         current_app.logger.warning(f"[EMAIL] gagal: {e}")

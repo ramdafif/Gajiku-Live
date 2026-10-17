@@ -1,0 +1,98 @@
+{% macro employee_fields(record, prefix, catalog, superuser, selected_client='') %}
+{% set company = record.perusahaan_induk if record else selected_client if superuser else session.get('company', '') %}
+{% set selection = namespace(projects=[], allow=false) %}
+{% for client in catalog %}{% if client.name == company %}{% set selection.projects = client.projects %}{% set selection.allow = client.allow_projects %}{% endif %}{% endfor %}
+<div class="form-grid">
+  <h3 class="form-section-title">Identitas pegawai</h3>
+  <div class="field">
+    <label for="{{ prefix }}-id">ID pegawai</label>
+    <input id="{{ prefix }}-id" name="id_pegawai" required maxlength="16" pattern="[A-Za-z0-9]{1,16}" value="{{ record.id_pegawai if record else '' }}" placeholder="Contoh: GJK001">
+    <p class="field-hint">Maksimal 16 karakter, huruf dan angka.</p>
+  </div>
+  <div class="field">
+    <label for="{{ prefix }}-name">Nama lengkap</label>
+    <input id="{{ prefix }}-name" name="nama" required maxlength="255" value="{{ record.nama if record else '' }}" autocomplete="off">
+  </div>
+  <div class="field">
+    <label for="{{ prefix }}-email">Email</label>
+    <input id="{{ prefix }}-email" type="email" name="email" required maxlength="255" value="{{ record.email if record else '' }}" autocomplete="off">
+  </div>
+  <div class="field">
+    <label for="{{ prefix }}-phone">Nomor telepon</label>
+    <input id="{{ prefix }}-phone" type="tel" name="no_telp" maxlength="50" value="{{ (record.no_telp or '') if record else '' }}">
+  </div>
+  <div class="field">
+    <label for="{{ prefix }}-job">Jabatan</label>
+    <input id="{{ prefix }}-job" name="jabatan" maxlength="255" value="{{ (record.jabatan or '') if record else '' }}">
+  </div>
+  <div class="field">
+    <label for="{{ prefix }}-status">Status</label>
+    <select id="{{ prefix }}-status" name="status">
+      <option value="1"{% if not record or record.status_aktif == 1 %} selected{% endif %}>Aktif</option>
+      <option value="0"{% if record and record.status_aktif != 1 %} selected{% endif %}>Tidak aktif</option>
+    </select>
+  </div>
+  <h3 class="form-section-title">Perusahaan &amp; skema gaji</h3>
+  <div class="field">
+    <label for="{{ prefix }}-company">Perusahaan induk</label>
+    {% if superuser %}
+    <select id="{{ prefix }}-company" name="perusahaan_induk" data-company-select required>
+      <option value="">Pilih perusahaan</option>
+      {% if record and company and company not in catalog|map(attribute='name')|list %}
+      <option value="{{ company }}" selected>{{ company }} (tersimpan)</option>
+      {% endif %}{% for client in catalog %}
+      <option value="{{ client.name }}"{% if client.name == company %} selected{% endif %}>{{ client.name }}</option>
+      {% endfor %}
+    </select>
+    {% else %}
+    <input id="{{ prefix }}-company" value="{{ company }}" data-company-display readonly>
+    <input type="hidden" name="perusahaan_induk" value="{{ company }}">
+    {% endif %}
+  </div>
+  <div class="field">
+    <label for="{{ prefix }}-project">Project</label>
+    <select id="{{ prefix }}-project" name="perusahaan" data-project-select{% if selection.allow %} required{% endif %}>
+      <option value="">{{ 'Pilih project resmi' if selection.allow else 'Tidak menggunakan project' }}</option>
+      {% if record and record.perusahaan and record.perusahaan not in selection.projects %}
+      <option value="{{ record.perusahaan }}" selected>{{ record.perusahaan }} (tersimpan)</option>
+      {% endif %}{% for project in selection.projects %}
+      <option value="{{ project }}"{% if record and record.perusahaan == project %} selected{% endif %}>{{ project }}</option>
+      {% endfor %}
+    </select>
+    <p class="field-hint" data-project-hint>Project mengikuti perusahaan dan pengaturan MoU.</p>
+  </div>
+  <div class="field">
+    <label for="{{ prefix }}-salary">Gaji pokok (Rp)</label>
+    <input id="{{ prefix }}-salary" type="number" name="gaji" min="0" max="2147483647" step="1" required value="{{ record.gaji if record else '' }}" inputmode="numeric" placeholder="Tanpa titik atau koma">
+  </div>
+  <div class="field">
+    <label for="{{ prefix }}-cycle">Siklus gaji</label>
+    <select id="{{ prefix }}-cycle" name="siklus_gaji">
+      {% for cycle,label in [('A','A - Mulai tanggal 1'),('B','B - Mulai tanggal 16'),('C','C - Mulai tanggal 21'),('D','D - Mulai tanggal 26')] %}
+      <option value="{{ cycle }}"{% if (record and record.siklus_gaji == cycle) or (not record and cycle == 'B') %} selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  {% if superuser %}
+  <div class="field field-full">
+    <label for="{{ prefix }}-fee">Biaya admin dasar (Rp)</label>
+    <input id="{{ prefix }}-fee" type="number" name="admin_fee_flat" min="0" max="1000000" step="1" required value="{{ record.admin_fee_flat if record else '' }}" placeholder="Isi manual, 0 - 1.000.000" inputmode="numeric">
+    <p class="field-hint">Wajib diisi manual. PPN mengikuti pengaturan sistem.</p>
+  </div>
+  {% endif %}
+  <h3 class="form-section-title">Rekening tujuan</h3>
+  <div class="field">
+    <label for="{{ prefix }}-bank">Rekening bank utama</label>
+    <input id="{{ prefix }}-bank" name="no_rekening" maxlength="100" value="{{ (record.no_rekening or '') if record else '' }}" inputmode="numeric">
+  </div>
+  <div class="field">
+    <label for="{{ prefix }}-other-bank">Rekening bank lain</label>
+    <input id="{{ prefix }}-other-bank" name="no_rekening_lain" maxlength="100" value="{{ (record.no_rekening_lain or '') if record else '' }}" inputmode="numeric">
+  </div>
+  <div class="field field-full">
+    <label for="{{ prefix }}-ewallet">Rekening e-wallet</label>
+    <input id="{{ prefix }}-ewallet" name="rekening_ewallet" maxlength="100" pattern="[A-Za-z0-9 ]*" value="{{ (record.rekening_ewallet or '') if record else '' }}">
+    <p class="field-hint">Hanya huruf, angka, dan spasi.</p>
+  </div>
+</div>
+{% endmacro %}

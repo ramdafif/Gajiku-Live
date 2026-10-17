@@ -1,0 +1,78 @@
+{% macro admin_fields(record, prefix, companies, creating=true) %}
+<div class="form-grid">
+  <h3 class="form-section-title">Identitas &amp; akses</h3>
+  <div class="field">
+    <label for="{{ prefix }}-name">Nama admin</label>
+    <input id="{{ prefix }}-name" name="nama" required maxlength="255" value="{{ record.name if record else '' }}">
+  </div>
+  <div class="field">
+    <label for="{{ prefix }}-email">Email</label>
+    <input id="{{ prefix }}-email" type="email" name="email" required maxlength="255" value="{{ record.email if record else '' }}" autocomplete="off">
+  </div>
+  <div class="field">
+    <label for="{{ prefix }}-company">Perusahaan</label>
+    <select id="{{ prefix }}-company" name="perusahaan"{% if (not record and creating) or (record and record.company) %} required{% endif %}>
+      <option value="">{{ 'Tidak ditautkan (data lama)' if record and not record.company else 'Pilih perusahaan terdaftar' }}</option>
+      {% if record and record.company and record.company not in companies %}
+      <option value="{{ record.company }}" selected>{{ record.company }} (tersimpan)</option>
+      {% endif %}{% for company in companies %}
+      <option value="{{ company }}"{% if record and company == record.company %} selected{% endif %}>{{ company }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="field">
+    <label for="{{ prefix }}-phone">Nomor telepon</label>
+    <input id="{{ prefix }}-phone" type="tel" name="no_telp" maxlength="50" value="{{ (record.no_telp or '') if record else '' }}">
+  </div>
+  {% if not record and creating %}
+  <div class="field field-full">
+    <label for="{{ prefix }}-password">Password awal</label>
+    <input id="{{ prefix }}-password" type="password" name="password" required minlength="6" autocomplete="new-password" placeholder="Minimal 6 karakter">
+  </div>
+  {% endif %}
+  <div class="field field-full">
+    <label for="{{ prefix }}-status">Status akun</label>
+    <select id="{{ prefix }}-status" name="status">
+      <option value="1"{% if not record or record.status_aktif == 1 %} selected{% endif %}>Aktif</option>
+      <option value="0"{% if record and record.status_aktif != 1 %} selected{% endif %}>Tidak aktif</option>
+    </select>
+  </div>
+  <label class="check-row field-full">
+    <input name="hak_approval" value="1" type="checkbox"{% if record and record.hak_approval %} checked{% endif %}>
+    <span>
+      <strong>Hak persetujuan tahap pertama</strong>
+      <small>Izinkan admin menyetujui atau menolak pengajuan dalam cakupan perusahaan. Tidak aktif secara default untuk akun baru.</small>
+    </span>
+  </label>
+  <h3 class="form-section-title">Konfigurasi perusahaan</h3>
+  <label class="check-row field-full">
+    <input name="cutoff_mingguan_aktif" value="1" type="checkbox"{% if record and record.cutoff_mingguan_aktif %} checked{% endif %}>
+    <span>
+      <strong>Gunakan cutoff mingguan</strong>
+      <small>Konfigurasi perusahaan mengikuti hasil validasi dan sinkronisasi server.</small>
+    </span>
+  </label>
+  <div class="field field-full">
+    <label for="{{ prefix }}-cutoff">Hari cutoff</label>
+    <select id="{{ prefix }}-cutoff" name="cutoff_hari">
+      {% for day in ['Senin','Selasa','Rabu','Kamis','Jumat','Sabtu','Minggu'] %}
+      <option value="{{ loop.index0 }}"{% if (record and record.cutoff_hari == loop.index0) or (not record and loop.index0 == 2) %} selected{% endif %}>{{ day }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <label class="check-row">
+    <input name="produk_reg_aktif" value="1" type="checkbox"{% if not record or record.produk_reg_aktif %} checked{% endif %}>
+    <span>
+      <strong>Reguler (REG)</strong>
+      <small>Akses dari saldo harian.</small>
+    </span>
+  </label>
+  <label class="check-row">
+    <input name="produk_urg_aktif" value="1" type="checkbox"{% if not record or record.produk_urg_aktif %} checked{% endif %}>
+    <span>
+      <strong>Urgent (URG)</strong>
+      <small>Akses dari sisa plafon.</small>
+    </span>
+  </label>
+</div>
+{% endmacro %}

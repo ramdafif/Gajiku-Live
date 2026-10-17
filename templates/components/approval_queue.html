@@ -1,0 +1,74 @@
+{% from 'components/macros.html' import icon, csrf, product_badge, empty_state with context %}
+{% set transfer_queue = pending_transfer|default([], true) if superuser else [] %}
+{% set reg_queue = (pending_reg|default([], true)) + (transfer_queue|selectattr('product', 'equalto', 'reg')|list) %}
+{% set urg_queue = (pending_urg|default([], true)) + (transfer_queue|selectattr('product', 'equalto', 'urg')|list) %}
+{% for code, queue in [('reg', reg_queue), ('urg', urg_queue)] %}
+{% if code in enabled_products or queue %}
+<section class="card approval-card mb-24" id="antrean-{{ code }}">
+  <div class="card-header">
+    <div>
+      <p class="eyebrow">{{ 'APPROVAL SUPERADMIN' if superuser else 'APPROVAL PERUSAHAAN' }}</p>
+      <h2>Permintaan {{ 'Reg' if code == 'reg' else 'Urg' }} On-Proses <span class="count-pill">{{ queue|length }}</span>
+      </h2>
+      <p>{{ 'Periksa proses transfer sebelum mencatat pengajuan sebagai selesai.' if superuser else 'Approval tahap pertama. Pengajuan tetap menunggu approval superadmin.' }}</p>
+    </div>{{ product_badge(code) }}</div>
+  {% if queue %}
+  <div class="table-scroll" tabindex="0" role="region" aria-label="Antrean pengajuan {{ code|upper }}">
+    <table class="data-table" data-paginate="5">
+      <thead>
+        <tr>
+          <th scope="col">Pegawai</th>
+          <th scope="col">Perusahaan / project</th>
+          <th scope="col">Pengajuan</th>
+          <th scope="col">Rekening tujuan</th>
+          <th scope="col">Tahap</th>
+          <th scope="col" class="text-right">Tindakan</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for tx in queue %}
+        <tr>
+          <td>
+            <strong>{{ tx.nama }}</strong>
+            <small>{{ tx.id_pegawai or '-' }} &middot; #{{ tx.id }}</small>
+            <small>{{ tx.jabatan or '-' }} &middot; {{ tx.no_telp or '-' }}</small>
+          </td>
+          <td>{{ tx.perusahaan_induk or '-' }}<small>{{ tx.perusahaan or '-' }}</small>
+          </td>
+          <td>
+            <strong class="amount">{{ tx.nominal|rupiah }}</strong>
+            <small>Biaya {{ tx.admin_fee|rupiah }}</small>
+            <small>{{ tx.tanggal|indo_date }}</small>
+          </td>
+          <td>
+            <strong>{{ tx.no_rekening or '-' }}</strong>
+            <small>{{ tx.rekening_tujuan_label or 'Rekening' }}</small>
+          </td>
+          <td>
+            <span class="badge {{ 'badge-blue' if tx.can_final else 'badge-warning' }}">{{ 'Menunggu approval superadmin' if tx.can_final else 'Menunggu approval admin' }}</span>
+            {% if superuser and not tx.can_final %}
+            <small class="queue-reason">{{ tx.final_block_reason }}</small>
+            {% endif %}
+          </td>
+          <td>
+            <div class="row-actions">
+              {% if (superuser and tx.can_final) or (not superuser and tx.admin_can_act) %}
+              <form action="{{ url_for('web.superadmin_tx_approve' if superuser else 'web.admin_tx_approve', txid=tx.id) }}" method="post" data-confirm="{{ 'Catat pengajuan #' ~ tx.id ~ ' sebesar ' ~ (tx.nominal|rupiah) ~ ' sebagai selesai? Pastikan transfer benar-benar berhasil dan bukti tersimpan. Aksi ini tidak melakukan transfer bank.' if superuser else 'Setujui pengajuan #' ~ tx.id ~ ' untuk diteruskan ke superadmin? Ini adalah persetujuan tahap pertama, bukan konfirmasi transfer.' }}" data-confirm-title="{{ 'Finalisasi pengajuan?' if superuser else 'Setujui pengajuan?' }}">{{ csrf() }}<button type="submit" class="button button-success button-small">{{ icon('check') }} {{ 'Selesaikan' if superuser else 'Setujui' }}</button>
+              </form>
+              {% endif %}{% if superuser or tx.admin_can_act %}
+              <form action="{{ url_for('web.superadmin_tx_reject' if superuser else 'web.admin_tx_reject', txid=tx.id) }}" method="post" data-confirm="Pengajuan #{{ tx.id }} akan dicatat sebagai ditolak." data-confirm-title="Tolak pengajuan ini?">{{ csrf() }}<button type="submit" class="button button-danger button-small">Tolak</button>
+              </form>
+              {% else %}
+              <span class="text-small text-muted">Tidak ada aksi</span>
+              {% endif %}
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}{{ empty_state('Tidak ada pengajuan menunggu', 'Belum ada pengajuan ' ~ code|upper ~ ' yang menunggu pada antrean ini.', 'check') }}{% endif %}
+</section>
+{% endif %}
+{% endfor %}

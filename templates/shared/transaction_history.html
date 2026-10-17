@@ -1,0 +1,137 @@
+{% extends 'layouts/base.html' %}
+{% from 'components/macros.html' import icon, page_heading, metric, status_badge, product_badge, empty_state with context %}
+{% block title %}Riwayat Transaksi{% endblock %}
+{% block breadcrumb %}Riwayat transaksi{% endblock %}
+{% block content %}
+{% call page_heading('TRANSAKSI', 'Riwayat Transaksi', 'Telusuri pengajuan berdasarkan pegawai, waktu, perusahaan, dan status.') %}<button type="button" class="button button-secondary" data-dialog="export-dialog">{{ icon('download') }} Export CSV</button>{% endcall %}
+<div class="metric-grid metric-grid-three">{{ metric('Nominal hasil filter', total_nom|rupiah, 'Agregat mengikuti perhitungan server', 'wallet', 'accent-blue') }}{{ metric('Biaya admin', total_admin|rupiah, 'Total biaya pada hasil filter', 'receipt') }}{{ metric('Jumlah transaksi', rows|length, 'Sesuai seluruh filter aktif', 'history') }}
+</div>
+<section class="card">
+  <div class="card-header">
+    <div>
+      <h2>Daftar transaksi</h2>
+      <p>Data sesuai cakupan akses akun.</p>
+    </div>
+    <span class="badge badge-neutral">{{ rows|length }} hasil</span>
+  </div>
+  <form method="get" class="filter-bar" data-date-range>
+    <div class="field field-search">
+      <label for="history-q">Cari pegawai atau rekening</label>
+      <div class="input-wrap has-leading">{{ icon('search') }}<input type="search" name="q" id="history-q" placeholder="Nama, ID, email, atau rekening..." value="{{ q }}">
+      </div>
+    </div>
+    <div class="field">
+      <label for="history-company">Perusahaan</label>
+      <select name="company" id="history-company">
+        <option value="">{{ 'Semua perusahaan' if superuser else 'Cakupan perusahaan saya' }}</option>
+        {% for company in companies %}
+        <option value="{{ company }}"{% if company == f_company %} selected{% endif %}>{{ company }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label for="history-project">Project</label>
+      <select name="project" id="history-project">
+        <option value="">Semua project</option>
+        {% for project in projects|default([]) %}
+        <option value="{{ project }}"{% if project == f_project %} selected{% endif %}>{{ project }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label for="history-product">Produk</label>
+      <select name="product" id="history-product">
+        <option value="">Semua produk</option>
+        <option value="reg"{% if product == 'reg' %} selected{% endif %}>Reguler (REG)</option>
+        <option value="urg"{% if product == 'urg' %} selected{% endif %}>Urgent (URG)</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="history-status">Status</label>
+      <select name="status" id="history-status">
+        <option value="">Semua status</option>
+        {% for value,label in [('on-proses','Diproses'),('sukses','Selesai'),('ditolak','Ditolak'),('dibatalkan','Dibatalkan')] %}
+        <option value="{{ value }}"{% if status == value %} selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label for="history-start">Tanggal mulai</label>
+      <input type="date" name="start" id="history-start" value="{{ start }}" required>
+    </div>
+    <div class="field">
+      <label for="history-end">Tanggal akhir</label>
+      <input type="date" name="end" id="history-end" value="{{ end }}" required>
+    </div>
+    <button type="submit" class="button button-primary">{{ icon('filter') }} Terapkan</button>
+    <a class="button button-secondary" href="{{ url_for(history_endpoint) }}">Reset</a>
+  </form>
+  {% if rows %}
+  <div class="table-scroll" tabindex="0" role="region" aria-label="Riwayat transaksi">
+    <table class="data-table" data-paginate="15">
+      <thead>
+        <tr>
+          <th scope="col">Pegawai</th>
+          <th scope="col">Perusahaan / project</th>
+          <th scope="col">Tanggal</th>
+          <th scope="col">Produk</th>
+          <th scope="col">Nominal</th>
+          <th scope="col">Biaya admin</th>
+          <th scope="col">Status</th>
+          <th scope="col">Rincian</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td>
+            <strong>{{ row.nama }}</strong>
+            <small>{{ row.id_pegawai or '-' }} &middot; #{{ row.id }}</small>
+          </td>
+          <td>{{ row.company or '-' }}<small>{{ row.project|default('-') or '-' }}</small>
+          </td>
+          <td>{{ row.tanggal|indo_date }}</td>
+          <td>{{ product_badge(row.product) }}</td>
+          <td class="amount">{{ row.nominal|rupiah }}</td>
+          <td>{{ row.admin_fee|rupiah }}</td>
+          <td>{{ status_badge(row.status) }}</td>
+          <td>
+            <details class="row-details">
+              <summary>Detail</summary>
+              <dl class="detail-list">
+                <div>
+                  <dt>Email</dt>
+                  <dd>{{ row.email_user|default('-') }}</dd>
+                </div>
+                <div>
+                  <dt>Jabatan</dt>
+                  <dd>{{ row.jabatan or '-' }}</dd>
+                </div>
+                <div>
+                  <dt>Rekening</dt>
+                  <dd>{{ row.no_rekening or '-' }}</dd>
+                </div>
+                <div>
+                  <dt>Jenis rekening</dt>
+                  <dd>{{ row.rekening_tujuan_label or '-' }}</dd>
+                </div>
+                <div>
+                  <dt>Periode</dt>
+                  <dd>{{ row.periode|format_period_label }}</dd>
+                </div>
+                <div>
+                  <dt>Catatan</dt>
+                  <dd>{{ row.keterangan or '-' }}</dd>
+                </div>
+              </dl>
+            </details>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}{{ empty_state('Tidak ada transaksi yang cocok', 'Ubah kata kunci atau rentang tanggal, lalu terapkan filter kembali.', 'search') }}{% endif %}
+</section>
+{% include 'components/export_dialog.html' %}
+{% endblock %}

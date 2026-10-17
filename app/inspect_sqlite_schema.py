@@ -1,26 +1,22 @@
 import sqlite3
-import os
+from pathlib import Path
 
-path = os.path.join(os.path.dirname(__file__), '..', 'data', 'tarikgaji-live.db')
-print('DB:', path)
-conn = sqlite3.connect(path)
-cur = conn.cursor()
-cur.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-print('tables=', cur.fetchall())
-for tbl in ['admins','pegawai','user_accounts','transactions','app_settings','users']:
-    print('\nTABLE', tbl)
+
+def main():
+    path = Path(__file__).resolve().parents[1] / "data" / "tarikgaji-live.db"
+    if not path.is_file():
+        raise SystemExit("Database SQLite tidak ditemukan. Tidak ada database yang dibuat atau diubah.")
+    connection = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
     try:
-        cur.execute("PRAGMA table_info('%s')" % tbl)
-        print('schema=')
-        for row in cur.fetchall():
-            print(row)
-    except Exception as e:
-        print('schema error', e)
-    try:
-        cur.execute("SELECT * FROM %s LIMIT 3" % tbl)
-        print('rows=')
-        for row in cur.fetchall():
-            print(row)
-    except Exception as e:
-        print('sample error', e)
-conn.close()
+        for table in ["admins", "pegawai", "user_accounts", "transactions", "app_settings", "users"]:
+            print("TABLE", table)
+            for column in connection.execute(f"PRAGMA table_info('{table}')").fetchall():
+                print(column[1], column[2])
+            total = connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+            print("row_count", total)
+    finally:
+        connection.close()
+
+
+if __name__ == "__main__":
+    main()

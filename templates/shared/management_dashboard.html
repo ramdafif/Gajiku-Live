@@ -1,0 +1,284 @@
+{% extends 'layouts/base.html' %}
+{% from 'components/macros.html' import icon, csrf, metric, page_heading, status_badge, product_badge, empty_state with context %}
+{% block title %}Dashboard {{ 'Superadmin' if superuser else 'Admin' }}{% endblock %}
+{% block content %}
+{% if superuser %}
+{% set approval_rows = (pending_transfer|default([], true)) + (pending_reg|default([], true)) + (pending_urg|default([], true)) %}
+{% set approval_count = approval_rows|selectattr('can_final')|list|length %}
+{% else %}
+{% set approval_count = pending_admin_count|default(0) %}
+{% endif %}
+{% call page_heading('SUPERADMIN' if superuser else 'ADMIN', 'Dashboard ' ~ ('Superadmin' if superuser else 'Admin'), 'Pantau pengajuan, pegawai, dan transaksi.') %}{% if superuser %}
+<button type="button" class="button button-secondary" data-dialog="products-dialog">{{ icon('settings') }} Kelola produk</button>
+<button type="button" class="button button-primary" data-dialog="export-dialog">{{ icon('download') }} Export CSV</button>
+{% else %}
+<button type="button" class="button button-secondary" data-dialog="export-dialog">{{ icon('download') }} Export CSV</button>
+{% endif %}{% endcall %}
+<section class="overview-banner mb-24">
+  <div>
+    <span class="overview-tag">{{ icon('chart') }} {{ mk|format_period_label }}</span>
+    <p>Nominal pengajuan selesai</p>
+    <strong class="amount">{{ trx_sum|default(0)|rupiah }}</strong>
+    <span class="overview-caption">{{ trx_count|default(0) }} transaksi pada periode ringkasan</span>
+  </div>
+  <div class="overview-side">
+    <span class="overview-stat">
+      <b>{{ pending_count|default(0) }}</b>
+      <span>Pengajuan diproses</span>
+    </span>
+    <span class="overview-stat">
+      <b>{{ approval_count }}</b>
+      <span>Menunggu approval</span>
+    </span>
+    <a href="#antrean-reg" class="button button-white button-small">Periksa antrean {{ icon('arrow-right') }}</a>
+  </div>
+</section>
+{% if superuser %}
+<div class="notice notice-info mb-24">{{ icon('info') }}<span>Antrean dan aktivitas terbaru menampilkan lintas perusahaan. Finalisasi hanya mencatat status aplikasi, bukan mengirim uang ke rekening.</span>
+</div>
+{% endif %}
+{% include 'components/approval_queue.html' %}
+<div class="section-header" id="ringkasan">
+  <div>
+    <p class="eyebrow">DATA PEGAWAI</p>
+    <h2>Ringkasan pegawai &amp; aktivitas</h2>
+  </div>
+  {% if superuser %}
+  <form method="get" class="inline wrap compact-filter">
+    <div class="field">
+      <label for="dashboard-company" class="sr-only">Perusahaan untuk ringkasan</label>
+      <select id="dashboard-company" name="company">
+        <option value="">Semua perusahaan</option>
+        {% for company in companies|default([]) %}
+        <option value="{{ company }}"{% if company == company_selected %} selected{% endif %}>{{ company }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <button type="submit" class="button button-secondary button-small">Tampilkan</button>
+  </form>
+  {% endif %}
+</div>
+<div class="metric-grid">{{ metric('Total Pegawai (master)', total_pegawai|default(0), 'Master pegawai terdaftar', 'users', 'accent-blue') }}{{ metric('Akun teregistrasi', total_register|default(0), (not_registered|default(0)) ~ ' belum mendaftar', 'user') }}{{ metric('Akun aktif', reg_aktif|default(0), (inactive_count|default(0)) ~ ' pegawai tidak aktif', 'shield', 'accent-green') }}{{ metric('Biaya admin periode', (admin_fee_total|default(total_admin|default(0)))|rupiah, 'Dari pengajuan yang selesai', 'receipt', 'accent-amber') }}</div>
+<div class="chart-grid mb-24">
+  <section class="card">
+    <div class="card-header">
+      <div>
+        <h2>Aktivitas pengajuan harian</h2>
+        <p>Nominal selesai per hari pada bulan kalender berjalan.</p>
+      </div>
+      <span class="chart-legend">
+        <i>
+        </i> Nominal</span>
+    </div>
+    <div class="card-body">
+      <div class="chart" data-chart="daily-chart" role="img" aria-label="Grafik nominal pengajuan selesai per hari">
+      </div>
+      <details class="chart-data">
+        <summary>Lihat data grafik</summary>
+        <dl>
+          {% for label in chart_labels|default([]) %}
+          <div>
+            <dt>Hari {{ label }}</dt>
+            <dd>{{ chart_values[loop.index0]|rupiah }}</dd>
+          </div>
+          {% else %}
+          <p>Belum ada pengajuan selesai.</p>
+          {% endfor %}
+        </dl>
+      </details>
+    </div>
+  </section>
+  <section class="card">
+    <div class="card-header">
+      <div>
+        <h2>Tren enam bulan</h2>
+        <p>Nominal pengajuan selesai per bulan.</p>
+      </div>{{ icon('chart') }}</div>
+    <div class="card-body">
+      <div class="chart" data-chart="trend-chart" role="img" aria-label="Grafik tren enam bulan">
+      </div>
+      <details class="chart-data">
+        <summary>Lihat data grafik</summary>
+        <dl>
+          {% for label in trend_labels|default([]) %}
+          <div>
+            <dt>{{ label|format_period_label }}</dt>
+            <dd>{{ trend_values[loop.index0]|rupiah }}</dd>
+          </div>
+          {% else %}
+          <p>Belum ada data tren.</p>
+          {% endfor %}
+        </dl>
+      </details>
+    </div>
+  </section>
+</div>
+<div class="dashboard-grid mb-24">
+  <section class="card">
+    <div class="card-header">
+      <div>
+        <h2>Distribusi skema gaji</h2>
+        <p>Jumlah pegawai pada setiap siklus.</p>
+      </div>{{ icon('calendar') }}</div>
+    <div class="card-body">
+      <div class="cycle-grid">
+        {% for label, value in [('A',cycle_a|default(0)),('B',cycle_b|default(0)),('C',cycle_c|default(0)),('D',cycle_d|default(0))] %}
+        <div class="cycle-stat">
+          <span>Siklus {{ label }}</span>
+          <strong>{{ value }}</strong>
+        </div>
+        {% endfor %}
+      </div>
+      {% if weekly_cutoff_counts|default({}) %}
+      <div class="weekly-stats">
+        <h3>Cutoff mingguan</h3>
+        {% for day, count in weekly_cutoff_counts.items() %}
+        <span class="badge badge-neutral">{{ ['Senin','Selasa','Rabu','Kamis','Jumat','Sabtu','Minggu'][day|int] }} &middot; {{ count }} pegawai</span>
+        {% endfor %}
+      </div>
+      {% endif %}
+      <dl class="detail-list">
+        <div>
+          <dt>Memenuhi kriteria akses</dt>
+          <dd>{{ eligible|default(0) }} pegawai</dd>
+        </div>
+        <div>
+          <dt>Belum menggunakan akses</dt>
+          <dd>{{ not_borrowed|default(0) }} pegawai</dd>
+        </div>
+      </dl>
+    </div>
+  </section>
+  <section class="card">
+    <div class="card-header">
+      <div>
+        <h2>Penggunaan berulang</h2>
+        <p>Pegawai yang kembali memakai akses pada bulan berikutnya.</p>
+      </div>{{ icon('history') }}</div>
+    {% if cohort_rows|default([]) %}
+    <div class="table-scroll" tabindex="0" role="region" aria-label="Retensi pegawai">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Bulan</th>
+            <th>Pengguna</th>
+            <th>Kembali</th>
+            <th>Rasio</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for cohort in cohort_rows %}
+          <tr>
+            <td>{{ cohort.cohort|format_period_label }}</td>
+            <td>{{ cohort.total }}</td>
+            <td>{{ cohort.repeat }}</td>
+            <td>
+              <span class="badge badge-blue">{{ cohort.rate }}%</span>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}{{ empty_state('Belum ada pola penggunaan', 'Data tampil setelah ada aktivitas lintas periode.', 'chart') }}{% endif %}
+  </section>
+</div>
+{% if superuser %}
+<section class="card mb-24">
+  <div class="card-header">
+    <div>
+      <h2>Rekap biaya admin</h2>
+      <p>Pengajuan selesai &middot; {{ admin_fee_recap_label|default('Semua periode') }}</p>
+    </div>
+    <form method="get" class="inline wrap compact-filter">
+      <div class="field">
+        <label for="admin_fee_month" class="sr-only">Bulan rekap biaya</label>
+        <input type="month" name="admin_fee_month" id="admin_fee_month" value="{{ admin_fee_month|default('') }}">
+      </div>
+      {% if company_selected|default('') %}
+      <input type="hidden" name="company" value="{{ company_selected }}">
+      {% endif %}
+      <button class="button button-secondary button-small" type="submit">Filter</button>
+      <a class="button button-ghost button-small" href="{{ url_for(home_endpoint) }}">Semua</a>
+    </form>
+  </div>
+  <div class="table-scroll" tabindex="0" role="region" aria-label="Rekap biaya admin">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Produk</th>
+          <th>Transaksi selesai</th>
+          <th class="text-right">Total biaya admin</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in admin_fee_recap_rows|default([]) %}
+        <tr>
+          <td>{{ product_badge(item.product) }}</td>
+          <td>{{ item.trx_count }}</td>
+          <td class="amount text-right">{{ item.admin_fee_total|rupiah }}</td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="3">Belum ada biaya admin tercatat.</td>
+        </tr>
+        {% endfor %}
+        <tr>
+          <td>
+            <strong>Total</strong>
+          </td>
+          <td>
+            <strong>{{ admin_fee_recap_count|default(0) }}</strong>
+          </td>
+          <td class="amount text-right">{{ admin_fee_recap_total|default(0)|rupiah }}</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+<section class="card">
+  <div class="card-header">
+    <div>
+      <h2>Aktivitas terbaru</h2>
+      <p>Semua status pengajuan terbaru dalam cakupan aksesmu.</p>
+    </div>
+    <a class="text-link" href="{{ url_for(history_endpoint) }}">Lihat riwayat {{ icon('arrow-up-right') }}</a>
+  </div>
+  {% if recent|default([]) %}
+  <div class="table-scroll" tabindex="0" role="region" aria-label="Aktivitas terbaru">
+    <table class="data-table" data-paginate="8">
+      <thead>
+        <tr>
+          <th>Pegawai</th>
+          <th>Project</th>
+          <th>Tanggal</th>
+          <th>Produk</th>
+          <th>Nominal</th>
+          <th>Biaya</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in recent %}
+        <tr>
+          <td>
+            <strong>{{ row.nama }}</strong>
+            <small>{{ row.id_pegawai or '-' }}</small>
+          </td>
+          <td>{{ row.company or '-' }}</td>
+          <td>{{ row.tanggal|indo_date }}</td>
+          <td>{{ product_badge(row.product) }}</td>
+          <td class="amount">{{ row.nominal|rupiah }}</td>
+          <td>{{ row.admin_fee|rupiah }}</td>
+          <td>{{ status_badge(row.status) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}{{ empty_state('Belum ada aktivitas', 'Pengajuan pegawai akan muncul di sini ketika tersedia.', 'receipt') }}{% endif %}
+</section>
+{% if superuser %}{% include 'components/management_dialogs.html' %}{% else %}{% include 'components/export_dialog.html' %}{% endif %}
+<script type="application/json" id="daily-chart">{{ {'labels':chart_labels|default([]), 'values':chart_values|default([])}|tojson }}</script><script type="application/json" id="trend-chart">{{ {'labels':trend_labels|default([]), 'values':trend_values|default([])}|tojson }}</script>
+{% endblock %}

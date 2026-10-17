@@ -1,4 +1,5 @@
 import os
+from getpass import getpass
 import sqlite3
 from datetime import datetime
 from werkzeug.security import generate_password_hash
@@ -34,9 +35,9 @@ def create_new_superadmin():
 
         name = input("Masukkan nama admin baru: ").strip()
         email = input("Masukkan email admin baru: ").strip()
-        password = input("Masukkan password admin baru: ").strip()
+        password = getpass("Masukkan password admin baru: ")
 
-        if not name or not email or not password:
+        if not name or not email or not 6 <= len(password) <= 256:
             print("Nama, email, dan password wajib diisi.")
             return
 

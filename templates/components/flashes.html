@@ -1,0 +1,12 @@
+{% from 'components/macros.html' import icon %}
+{% with messages = get_flashed_messages(with_categories=true) %}
+{% if messages %}
+<div class="flash-list" aria-live="polite">
+  {% for category, message in messages %}
+  <div class="flash flash-{{ 'error' if category in ['error', 'danger'] else category }}" role="{{ 'alert' if category in ['error', 'danger'] else 'status' }}">{{ icon('info' if category in ['error', 'danger', 'warning', 'info'] else 'check') }}<span>{{ message }}</span>
+    <button type="button" class="icon-button" data-dismiss aria-label="Tutup pesan">{{ icon('close') }}</button>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+{% endwith %}

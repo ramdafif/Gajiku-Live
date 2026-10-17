@@ -1,0 +1,150 @@
+{% from 'components/macros.html' import icon, brand, csrf, avatar with context %}
+{% set staff = session.get('is_admin') or session.get('is_superadmin') %}
+{% set superuser = session.get('is_superadmin') %}
+{% set home_endpoint = 'web.superadmin_dashboard' if superuser else 'web.admin_dashboard' if staff else 'web.dashboard' %}
+{% set history_endpoint = 'web.superadmin_riwayat' if superuser else 'web.admin_riwayat' if staff else 'web.riwayat' %}
+{% set settings_endpoint = 'web.superadmin_settings' if superuser else 'web.admin_settings' if staff else 'web.settings_account' %}
+{% set display_name = account_name|default(session.get('admin_name') or session.get('user_name') or 'Akun Gajiku', true) %}
+{% set role_label = 'Superadmin' if superuser else 'Admin perusahaan' if staff else 'Pegawai' %}
+{% set current_endpoint = request.endpoint or '' %}
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#f6f8fb">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <meta name="description" content="Gajiku. Akses gajimu, setiap waktu. Kelola pengajuan dan aktivitas gaji dalam satu tempat.">
+    <title>
+      {% block title %}Beranda{% endblock %} - Gajiku</title>
+    <link rel="icon" href="{{ url_for('static', filename='img/logo_gjku.ico') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=20261017-scrollbars-overlay">
+    <link rel="stylesheet" href="{{ url_for('static', filename='pages.css') }}?v=20261017-auth-layout">
+    <link rel="stylesheet" href="{{ url_for('static', filename='responsive.css') }}?v=20261017-auth-layout">
+    <script src="{{ url_for('static', filename='scrollbars.js') }}?v=20261017-scrollbars-overlay" defer></script>
+    <script src="{{ url_for('static', filename='app.js') }}?v=20261017" defer></script>
+    {% block head_extra %}{% endblock %}
+  </head>
+  <body class="{% block body_class %}app-body{% endblock %}">
+    {% include 'components/icons.html' %}
+    <a href="#main-content" class="skip-link">Langsung ke konten</a>
+    {% block layout %}
+    <div class="app-shell">
+      <button class="sidebar-backdrop" data-close-nav aria-label="Tutup navigasi" tabindex="-1" hidden>
+      </button>
+      <aside class="sidebar" id="sidebar" aria-label="Navigasi utama" tabindex="-1">
+        <div class="sidebar-brand">
+          <a href="{{ url_for(home_endpoint) }}" aria-label="Gajiku beranda">{{ brand() }}</a>
+          <button type="button" class="icon-button mobile-only" data-close-nav aria-label="Tutup menu">{{ icon('close') }}</button>
+        </div>
+        <div class="workspace-label">
+          <span class="workspace-indicator">
+          </span>{{ role_label }}</div>
+        <p class="nav-caption">MENU UTAMA</p>
+        <nav class="nav-list">
+          {% set navigation = [(home_endpoint, 'grid', 'Beranda')] %}
+          {% if not staff %}{% set navigation = navigation + [('web.tarik_gaji', 'wallet', 'Tarik gaji')] %}{% endif %}
+          {% set navigation = navigation + [(history_endpoint, 'history', 'Riwayat transaksi')] %}
+          {% if staff %}{% set navigation = navigation + [('web.admin_pegawai', 'users', 'Kelola pegawai')] %}{% endif %}
+          {% if superuser %}{% set navigation = navigation + [('clients.superadmin_clients', 'building', 'Kelola perusahaan'), ('web.superadmin_admins', 'shield', 'Kelola admin')] %}{% elif staff and can_manage_projects %}{% set navigation = navigation + [('clients.admin_projects', 'folder', 'Kelola project')] %}{% endif %}
+          {% for endpoint, symbol, label in navigation %}
+          {% set active = current_endpoint == endpoint or (endpoint == 'clients.superadmin_clients' and current_endpoint == 'clients.superadmin_client_detail') %}
+          <a href="{{ url_for(endpoint) }}" class="nav-link {{ 'is-active' if active }}"{% if active %} aria-current="page"{% endif %}>{{ icon(symbol) }}<span>{{ label }}</span>
+            {% if active %}
+            <span class="nav-active-dot">
+            </span>
+            {% endif %}
+          </a>
+          {% endfor %}
+        </nav>
+        <p class="nav-caption">PREFERENSI</p>
+        <nav class="nav-list" aria-label="Preferensi">
+          <a href="{{ url_for(settings_endpoint) }}" class="nav-link {{ 'is-active' if current_endpoint == settings_endpoint }}"{% if current_endpoint == settings_endpoint %} aria-current="page"{% endif %}>{{ icon('settings') }}<span>Pengaturan akun</span>
+          </a>
+          <button type="button" class="nav-link" data-dialog="help-dialog">{{ icon('help') }}<span>Pusat bantuan</span>
+          </button>
+        </nav>
+        <div class="sidebar-bottom">
+          <div class="sidebar-note">{{ icon('spark') }}<strong>Akses gaji</strong>
+            <p>Akses gajimu, setiap waktu.</p>
+          </div>
+          <form action="{{ url_for('web.superadmin_logout' if superuser else 'web.admin_logout' if staff else 'web.logout') }}" method="post" data-confirm="Anda akan keluar dari akun Gajiku." data-confirm-title="Keluar dari akun?">{{ csrf() }}<button class="nav-link logout-link" type="submit">{{ icon('logout') }}<span>Keluar akun</span>
+            </button>
+          </form>
+          <span class="sidebar-legal">PT Solusi Akses Nusantara</span>
+        </div>
+      </aside>
+      <div class="workspace">
+        <header class="topbar">
+          <div class="topbar-start">
+            <button type="button" class="icon-button mobile-only" data-toggle-nav aria-controls="sidebar" aria-expanded="false" aria-label="Buka menu">{{ icon('menu') }}</button>
+            <div class="breadcrumb">
+              <span>Ruang kerja</span>{{ icon('chevron') }}<strong>
+                {% block breadcrumb %}Beranda{% endblock %}
+              </strong>
+            </div>
+            <a class="mobile-brand" href="{{ url_for(home_endpoint) }}">{{ brand() }}</a>
+          </div>
+          <div class="topbar-end">
+            <span class="topbar-date">{{ icon('calendar') }}<time data-local-date>
+              </time>
+            </span>
+            <button type="button" class="icon-button help-button" data-dialog="help-dialog" aria-label="Bantuan">{{ icon('help') }}</button>
+            <a class="profile-link" href="{{ url_for(settings_endpoint) }}">{{ avatar(display_name, avatar_url|default('')) }}<span class="profile-copy">
+                <strong>{{ display_name }}</strong>
+                <small>{{ role_label }}</small>
+              </span>{{ icon('chevron') }}</a>
+          </div>
+        </header>
+        <main id="main-content" class="main-content" tabindex="-1">
+          {% include 'components/flashes.html' %}
+          {% block content %}{% endblock %}
+          <footer class="page-footer">
+            <span>&copy; <span data-current-year>2026</span> Gajiku. PT Solusi Akses Nusantara.</span>
+            <span class="footer-confidential">{{ icon('lock') }} Data bersifat rahasia</span>
+          </footer>
+        </main>
+      </div>
+      <nav class="bottom-nav" aria-label="Navigasi cepat">
+        <a href="{{ url_for(home_endpoint) }}" class="{{ 'is-active' if current_endpoint == home_endpoint }}">{{ icon('grid') }}<span>Beranda</span>
+        </a>
+        <a href="{{ url_for('web.admin_pegawai' if staff else 'web.tarik_gaji') }}" class="{{ 'is-active' if current_endpoint == ('web.admin_pegawai' if staff else 'web.tarik_gaji') }}">{{ icon('users' if staff else 'wallet') }}<span>{{ 'Pegawai' if staff else 'Tarik gaji' }}</span>
+        </a>
+        <a href="{{ url_for(history_endpoint) }}" class="{{ 'is-active' if current_endpoint == history_endpoint }}">{{ icon('history') }}<span>Riwayat</span>
+        </a>
+        <a href="{{ url_for(settings_endpoint) }}" class="{{ 'is-active' if current_endpoint == settings_endpoint }}">{{ icon('user') }}<span>Akun</span>
+        </a>
+      </nav>
+    </div>
+    {% endblock %}
+    <dialog id="confirm-dialog" class="dialog dialog-small" aria-labelledby="confirm-title">
+      <div class="dialog-header">
+        <span class="dialog-emblem">{{ icon('info') }}</span>
+        <button type="button" class="icon-button" data-close-dialog aria-label="Tutup konfirmasi">{{ icon('close') }}</button>
+      </div>
+      <h2 id="confirm-title">Lanjutkan tindakan?</h2>
+      <p data-confirm-message>
+      </p>
+      <div class="dialog-actions">
+        <button type="button" class="button button-secondary" data-close-dialog>Batal</button>
+        <button type="button" class="button button-primary" data-confirm-accept>Ya, lanjutkan</button>
+      </div>
+    </dialog>
+    <dialog id="help-dialog" class="dialog dialog-small" aria-labelledby="help-title">
+      <div class="dialog-header">
+        <span class="dialog-emblem">{{ icon('help') }}</span>
+        <button type="button" class="icon-button" data-close-dialog aria-label="Tutup bantuan">{{ icon('close') }}</button>
+      </div>
+      <p class="eyebrow">DUKUNGAN</p>
+      <h2 id="help-title">Pusat Bantuan</h2>
+      <p>Untuk aktivasi akun, perubahan data pegawai, atau kendala pengajuan, hubungi admin perusahaan atau tim HR Anda.</p>
+      <div class="notice notice-info">{{ icon('info') }}<span>Jangan bagikan password atau tautan verifikasi. Status selesai di aplikasi bukan bukti transfer bank.</span>
+      </div>
+      <button type="button" class="button button-primary button-full" data-close-dialog>Mengerti</button>
+    </dialog>
+    <noscript>
+      <div class="noscript-notice">Aktifkan JavaScript untuk menu ponsel, preview pengajuan, dan pengelolaan data. Navigasi cepat tetap tersedia.</div>
+    </noscript>
+    {% block scripts %}{% endblock %}
+  </body>
+</html>

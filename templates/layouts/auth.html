@@ -1,0 +1,59 @@
+{% extends 'layouts/base.html' %}
+{% from 'components/macros.html' import icon, brand, csrf, password_field with context %}
+{% block body_class %}auth-body{% endblock %}
+{% block layout %}
+<div class="auth-shell">
+  <aside class="auth-story" aria-label="Tentang Gajiku">
+    <a class="auth-logo" href="{{ url_for('web.login') }}" aria-label="Gajiku">{{ brand() }}</a>
+    <div class="auth-story-content">
+      <span class="story-label">
+        <span class="status-dot">
+        </span> AKSES GAJIMU, SETIAP WAKTU</span>
+      <h1>Akses gaji<br> <span>sebelum hari gajian.</span>
+      </h1>
+      <p>Ajukan penarikan gaji sesuai saldo dan ketentuan perusahaan.</p>
+      <div class="auth-art" aria-hidden="true">
+        <div class="art-orbit orbit-one">
+        </div>
+        <div class="art-orbit orbit-two">
+        </div>
+        <div class="art-dot dot-one">
+        </div>
+        <div class="art-dot dot-two">
+        </div>
+        <div class="art-wallet">
+          <div class="art-card-top">{{ brand() }}{{ icon('spark') }}</div>
+          <div class="art-wallet-label">AKSES GAJI</div>
+          <div class="art-wallet-title">Tarik gaji<br> <span>sesuai saldo.</span>
+          </div>
+          <div class="art-wallet-bottom">
+            <span>Earned Wage Access</span>{{ icon('arrow-up-right') }}</div>
+        </div>
+        <div class="art-chip">{{ icon('check') }}<span>Saldo tersedia.<br> <strong>Periksa sebelum mengajukan.</strong>
+          </span>
+        </div>
+      </div>
+    </div>
+    <div class="auth-story-footer">
+      <span>Layanan akses gaji karyawan.</span>
+      <span class="story-pagination">
+        <b>
+        </b>
+        <i>
+        </i>
+        <i>
+        </i>
+      </span>
+    </div>
+  </aside>
+  <section class="auth-panel">
+    <main id="main-content" class="auth-main" tabindex="-1">
+      {% include 'components/flashes.html' %}{% block auth_content %}{% endblock %}
+    </main>
+    <footer class="auth-footer">
+      <span>&copy; <span data-current-year>2026</span> Gajiku</span>
+      <span>PT Solusi Akses Nusantara</span>
+    </footer>
+  </section>
+</div>
+{% endblock %}

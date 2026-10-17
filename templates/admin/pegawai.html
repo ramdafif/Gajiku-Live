@@ -1,0 +1,160 @@
+{% extends 'layouts/base.html' %}
+{% from 'components/macros.html' import icon, csrf, page_heading, empty_state, avatar with context %}
+{% from 'components/employee_fields.html' import employee_fields with context %}
+{% block title %}Kelola Pegawai{% endblock %}
+{% block breadcrumb %}Kelola pegawai{% endblock %}
+{% block content %}
+{% call page_heading('PEGAWAI', 'Kelola Pegawai', 'Kelola data pegawai, rekening, dan skema gaji.') %}
+<button type="button" class="button button-secondary" data-dialog="import-dialog">{{ icon('upload') }} Impor Excel</button>
+<button type="button" class="button button-primary" data-dialog="employee-add">{{ icon('plus') }} Tambah pegawai</button>
+{% endcall %}
+<div class="mini-overview mb-24">
+  <div class="mini-overview-icon">{{ icon('users') }}</div>
+  <div>
+    <strong>{{ total }}</strong>
+    <span>pegawai sesuai filter</span>
+  </div>
+  <div class="mini-overview-divider">
+  </div>
+  <p>Data ini menjadi acuan registrasi, rekening tujuan, dan kelayakan akses gaji.</p>
+</div>
+<section class="card">
+  <div class="card-header">
+    <div>
+      <h2>Master pegawai</h2>
+      <p>Perubahan data berlaku sesuai validasi backend.</p>
+    </div>
+    <a href="{{ url_for('web.admin_pegawai_import_template') }}" class="text-link">{{ icon('download') }} Template Excel</a>
+  </div>
+  <form method="get" class="filter-bar">
+    <div class="field field-search">
+      <label for="employee-q">Cari pegawai</label>
+      <div class="input-wrap has-leading">{{ icon('search') }}<input id="employee-q" type="search" name="q" value="{{ q }}" placeholder="Nama, ID, email, rekening...">
+      </div>
+    </div>
+    {% if superuser %}
+    <div class="field">
+      <label for="employee-client">Perusahaan induk</label>
+      <select id="employee-client" name="client">
+        <option value="">Semua perusahaan</option>
+        {% for client in client_catalog %}
+        <option value="{{ client.name }}"{% if selected_client == client.name %} selected{% endif %}>{{ client.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {% endif %}
+    <div class="field">
+      <label for="employee-company">Project</label>
+      <select id="employee-company" name="company">
+        <option value="">Semua project</option>
+        {% for company in companies %}
+        <option value="{{ company }}"{% if company == f_company %} selected{% endif %}>{{ company }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <button class="button button-primary" type="submit">{{ icon('filter') }} Terapkan</button>
+    <a href="{{ url_for('web.admin_pegawai') }}" class="button button-secondary">Reset</a>
+  </form>
+  {% if rows %}
+  <div class="table-scroll" tabindex="0" role="region" aria-label="Master pegawai">
+    <table class="data-table" data-paginate="10">
+      <thead>
+        <tr>
+          <th scope="col">Pegawai</th>
+          <th scope="col">Perusahaan / project</th>
+          <th scope="col">Gaji &amp; skema</th>
+          <th scope="col">Rekening</th>
+          <th scope="col">Status</th>
+          {% if superuser %}
+          <th scope="col">Biaya admin</th>
+          {% endif %}
+          <th scope="col" class="text-right">Tindakan</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td>
+            <div class="cell-person">{{ avatar(row.nama) }}<span>
+                <strong>{{ row.nama }}</strong>
+                <small>{{ row.id_pegawai }} &middot; {{ row.email }}</small>
+                <small>{{ row.jabatan or '-' }} &middot; {{ row.no_telp or '-' }}</small>
+              </span>
+            </div>
+          </td>
+          <td>{{ row.perusahaan_induk or '-' }}<small>{{ row.perusahaan or '-' }}</small>
+          </td>
+          <td>
+            <strong class="amount">{{ row.gaji|rupiah }}</strong>
+            <small>
+              {% if row.cutoff_mingguan_aktif %}Cutoff {{ ['Senin','Selasa','Rabu','Kamis','Jumat','Sabtu','Minggu'][(row.cutoff_hari or 0)|int] }}{% else %}Siklus {{ row.siklus_gaji or '-' }}{% endif %}
+            </small>
+          </td>
+          <td>{{ row.no_rekening or '-' }}{% if row.no_rekening_lain %}
+            <small>Lain: {{ row.no_rekening_lain }}</small>
+            {% endif %}{% if row.rekening_ewallet %}
+            <small>E-wallet: {{ row.rekening_ewallet }}</small>
+            {% endif %}
+          </td>
+          <td>
+            <span class="badge {{ 'badge-success' if row.status_aktif == 1 else 'badge-neutral' }}">
+              <span class="status-dot">
+              </span>{{ 'Aktif' if row.status_aktif == 1 else 'Tidak aktif' }}</span>
+          </td>
+          {% if superuser %}
+          <td>{{ row.admin_fee_flat|rupiah }}</td>
+          {% endif %}
+          <td>
+            <div class="row-actions">
+              <button type="button" class="button button-secondary button-small" data-dialog="employee-edit" data-form-action="{{ url_for('web.admin_pegawai_update', pid=row.id) }}" data-form-values='{{ {'perusahaan_induk':row.perusahaan_induk,'perusahaan':row.perusahaan,'id_pegawai':row.id_pegawai,'nama':row.nama,'email':row.email,'no_telp':row.no_telp,'jabatan':row.jabatan,'status':row.status_aktif,'gaji':row.gaji,'siklus_gaji':row.siklus_gaji,'admin_fee_flat':row.admin_fee_flat if superuser else none,'no_rekening':row.no_rekening,'no_rekening_lain':row.no_rekening_lain,'rekening_ewallet':row.rekening_ewallet}|tojson }}'>{{ icon('edit') }} Edit</button>
+              <form action="{{ url_for('web.admin_pegawai_delete', pid=row.id) }}" method="post" data-confirm="Hapus master pegawai {{ row.nama }} ({{ row.id_pegawai }})? Data terkait dan izin penghapusan akan diperiksa server." data-confirm-title="Hapus data pegawai?">{{ csrf() }}<button class="icon-button text-danger" type="submit" aria-label="Hapus pegawai {{ row.nama }}">{{ icon('trash') }}</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}{{ empty_state('Belum ada pegawai yang cocok', 'Ubah filter, tambahkan pegawai, atau impor menggunakan template Excel.', 'users') }}{% endif %}
+</section>
+<dialog class="dialog" id="employee-add" aria-labelledby="employee-add-title">
+  <div class="dialog-header">
+    <h2 id="employee-add-title">Tambah pegawai</h2>
+    <button type="button" class="icon-button" data-close-dialog aria-label="Tutup">{{ icon('close') }}</button>
+  </div>
+  <form action="{{ url_for('web.admin_pegawai_add') }}" method="post" data-employee-form data-loading-form>{{ csrf() }}{{ employee_fields(none, 'add', client_catalog, superuser, selected_client) }}<div class="dialog-actions">
+      <button type="button" class="button button-secondary" data-close-dialog>Batal</button>
+      <button type="submit" class="button button-primary">Simpan pegawai</button>
+    </div>
+  </form>
+</dialog>
+<dialog class="dialog" id="employee-edit" aria-labelledby="employee-edit-title">
+  <div class="dialog-header">
+    <h2 id="employee-edit-title">Edit pegawai</h2>
+    <button type="button" class="icon-button" data-close-dialog aria-label="Tutup">{{ icon('close') }}</button>
+  </div>
+  <form method="post" data-employee-form data-loading-form>{{ csrf() }}{{ employee_fields(none, 'edit', client_catalog, superuser) }}<div class="dialog-actions">
+      <button type="button" class="button button-secondary" data-close-dialog>Batal</button>
+      <button type="submit" class="button button-primary">Simpan perubahan</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="import-dialog" class="dialog dialog-small" aria-labelledby="import-title">
+  <div class="dialog-header">
+    <h2 id="import-title">Impor pegawai</h2>
+    <button type="button" class="icon-button" data-close-dialog aria-label="Tutup">{{ icon('close') }}</button>
+  </div>
+  <p>Unduh template terbaru, isi data sesuai kolomnya, lalu unggah kembali dalam format .xlsx.</p>
+  <a class="button button-secondary button-full mt-16" href="{{ url_for('web.admin_pegawai_import_template') }}">{{ icon('download') }} Unduh template Excel</a>
+  <form action="{{ url_for('web.admin_pegawai_import') }}" method="post" enctype="multipart/form-data" class="form-stack mt-24" data-loading-form>{{ csrf() }}<div class="field">
+      <label for="employee-file">File Excel (.xlsx)</label>
+      <input id="employee-file" type="file" name="file" accept=".xlsx" required>
+    </div>
+    <div class="notice notice-info">{{ icon('info') }}<span>{{ 'Gunakan template terbaru dengan kolom perusahaan dan biaya admin manual.' if superuser else 'Data hanya boleh berisi pegawai dalam cakupan perusahaan Anda.' }}</span>
+    </div>
+    <button class="button button-primary button-full" type="submit" data-loading-text="Memproses file...">{{ icon('upload') }} Impor data pegawai</button>
+  </form>
+</dialog>
+<script type="application/json" id="client-catalog">{{ client_catalog|tojson }}</script>
+{% endblock %}

@@ -1,0 +1,19 @@
+{% extends 'layouts/auth.html' %}
+{% block title %}Verifikasi Email{% endblock %}
+{% block auth_content %}
+<div class="auth-heading">
+  <span class="auth-heading-icon">{{ icon('mail') }}</span>
+  <p class="eyebrow">PENDAFTARAN</p>
+  <h2>Verifikasi Email
+  </h2>
+  <p>Konfirmasi email untuk melanjutkan pendaftaran akun Gajiku.</p>
+</div>
+<div class="verification-email">{{ icon('mail') }}<strong>{{ email }}</strong>
+</div>
+<form method="post" class="form-stack" data-loading-form>{{ csrf() }}<button type="submit" class="button button-primary button-full button-large" data-loading-text="Memverifikasi...">Verifikasi email {{ icon('check') }}</button>
+</form>
+<p class="auth-footnote">Aktivasi akun tetap mengikuti status data pegawai dari perusahaan.</p>
+<p class="auth-switch">
+  <a href="{{ url_for('web.login') }}">Kembali ke halaman masuk</a>
+</p>
+{% endblock %}

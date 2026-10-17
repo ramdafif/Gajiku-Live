@@ -3,9 +3,12 @@ import io
 import os
 import threading
 import time
+import sqlite3
 from datetime import date, datetime
 
 from app.db import get_db
+from app.services.security_service import business_today
+from app.utils.spreadsheets import SafeCSVWriter
 from app.services.email_service import send_email
 
 
@@ -48,7 +51,7 @@ def _set_setting(db, key: str, value: str):
 
 
 def _current_period_range():
-    today = date.today()
+    today = business_today()
     start = date(today.year, today.month, 1)
     if today.month == 12:
         end = date(today.year + 1, 1, 1)
@@ -59,7 +62,7 @@ def _current_period_range():
 
 def _build_csv_bytes(rows):
     buf = io.StringIO()
-    writer = csv.writer(buf)
+    writer = SafeCSVWriter(buf)
     writer.writerow(
         [
             "ID",
@@ -148,38 +151,54 @@ def _should_run(db):
         last_dt = datetime.fromisoformat(last)
     except Exception:
         return True
-    return (datetime.now() - last_dt).total_seconds() >= EXPORT_INTERVAL_SECONDS
+    now = datetime.now(last_dt.tzinfo) if last_dt.tzinfo else datetime.now()
+    return (now - last_dt).total_seconds() >= EXPORT_INTERVAL_SECONDS
 
 
 def _run_export_job(app):
     with app.app_context():
         db = get_db()
-        if not _should_run(db):
-            return
-        filename, full_path, data, start, end, total_rows = _export_current_period_csv()
-        period_label = start.strftime("%Y-%m")
-        subject = f"[Auto Export] CSV Periode {period_label}"
-        body = (
-            f"Export otomatis periode berjalan.\n"
-            f"Periode: {start.isoformat()} s.d {end.isoformat()} (eksklusif)\n"
-            f"Total baris: {total_rows}\n"
-            f"File: {full_path}\n"
-        )
-        sent = send_email(
-            subject,
-            body,
-            attachments=[
-                {
-                    "filename": filename,
-                    "content": data,
-                    "mimetype": "text/csv",
-                }
-            ],
-        )
-        if sent:
-            _set_setting(db, LAST_RUN_KEY, datetime.now().isoformat(timespec="seconds"))
+        lock_name = "gajiku_export_" + app.config.get("MYSQL_DB", "default")[:40]
+        if isinstance(db, sqlite3.Connection):
+            db.execute("BEGIN IMMEDIATE")
         else:
-            app.logger.warning("[EXPORT] email gagal, last_run tidak diperbarui.")
+            locked = db.execute("SELECT GET_LOCK(?, 0) AS acquired", (lock_name,)).fetchone()
+            if not locked or locked["acquired"] != 1:
+                return
+        try:
+            _run_locked_export(app, db)
+        finally:
+            db.rollback()
+            if not isinstance(db, sqlite3.Connection):
+                db.execute("SELECT RELEASE_LOCK(?)", (lock_name,)).fetchone()
+
+def _run_locked_export(app, db):
+    if not _should_run(db):
+        return
+    filename, full_path, data, start, end, total_rows = _export_current_period_csv()
+    period_label = start.strftime("%Y-%m")
+    subject = f"[Auto Export] CSV Periode {period_label}"
+    body = (
+        f"Export otomatis periode berjalan.\n"
+        f"Periode: {start.isoformat()} s.d {end.isoformat()} (eksklusif)\n"
+        f"Total baris: {total_rows}\n"
+        f"File: {full_path}\n"
+    )
+    sent = send_email(
+        subject,
+        body,
+        attachments=[
+            {
+                "filename": filename,
+                "content": data,
+                "mimetype": "text/csv",
+            }
+        ],
+    )
+    if sent:
+        _set_setting(db, LAST_RUN_KEY, datetime.now().isoformat(timespec="seconds"))
+    else:
+        app.logger.warning("[EXPORT] email gagal, last_run tidak diperbarui.")
 
 
 def start_export_scheduler(app, interval_seconds=3600):

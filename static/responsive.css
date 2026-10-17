@@ -1,0 +1,1153 @@
+@media (min-width: 901px) {
+  .icon-button.mobile-only {
+    display: none;
+  }
+}
+@media (max-width: 1200px) {
+  .workspace-live {
+    display: none;
+  }
+}
+@media (max-width: 900px) {
+  .icon-button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .input-action {
+    width: 44px;
+  }
+  .page-actions a.button,
+  .page-actions button.button,
+  .row-actions .button {
+    min-height: 44px;
+  }
+}
+@media (max-width: 440px) {
+  .step-indicator {
+    align-items: flex-start;
+    gap: 5px;
+  }
+  .step-indicator .step {
+    flex: 1;
+    min-width: 0;
+    flex-direction: column;
+    text-align: center;
+    white-space: normal;
+  }
+  .step-indicator .step-line {
+    flex: 0 0 10px;
+    margin-top: 11px;
+  }
+}
+@media (min-width: 1600px) {
+  .auth-story {
+    padding-inline: 80px;
+  }
+  .auth-story-content {
+    margin-inline: auto;
+  }
+  .auth-panel {
+    padding-inline: 70px;
+  }
+  .auth-main {
+    max-width: 390px;
+  }
+  .auth-story h1 {
+    font-size: 73px;
+  }
+  .auth-art {
+    margin-top: 45px;
+    margin-bottom: 20px;
+  }
+  .auth-heading h2 {
+    font-size: 38px;
+  }
+  .auth-main .field input {
+    height: 50px;
+  }
+  .auth-story-content > p {
+    font-size: 14px;
+  }
+  .auth-story-footer {
+    font-size: 12px;
+  }
+  .main-content {
+    padding-top: 42px;
+  }
+}
+@media (max-width: 1200px) {
+  .sidebar {
+    width: 222px;
+    padding-inline: 13px;
+  }
+  .workspace {
+    margin-left: 222px;
+  }
+  .topbar {
+    padding-inline: 25px;
+  }
+  .main-content {
+    padding-inline: 25px;
+  }
+  .topbar-date {
+    display: none;
+  }
+  .dashboard-grid {
+    grid-template-columns: minmax(0, 1.5fr) minmax(250px, 1fr);
+  }
+  .dashboard-lower {
+    grid-template-columns: minmax(0, 1.6fr) minmax(240px, 1fr);
+  }
+  .wallet-card {
+    padding: 24px;
+  }
+  .wallet-main {
+    flex-wrap: wrap;
+    gap: 14px;
+  }
+  .wallet-main .button {
+    min-height: 35px;
+    padding: 7px 12px;
+  }
+  .wallet-amount {
+    font-size: 33px;
+  }
+  .metric {
+    padding: 17px;
+  }
+  .metric-grid {
+    gap: 12px;
+  }
+  .metric-top {
+    font-size: 11px;
+  }
+  .metric-value {
+    font-size: 23px;
+  }
+  .metric-icon {
+    width: 26px;
+    height: 26px;
+  }
+  .overview-side {
+    gap: 19px;
+  }
+  .overview-stat {
+    padding-left: 17px;
+  }
+  .overview-side > .button {
+    display: none;
+  }
+  .chart-grid {
+    grid-template-columns: 1.2fr 1fr;
+  }
+  .withdraw-grid {
+    grid-template-columns: minmax(0, 1.3fr) minmax(250px, 0.9fr);
+  }
+  .client-overview {
+    gap: 14px;
+  }
+  .client-overview .card-header,
+  .client-overview .card-body {
+    padding: 18px;
+  }
+  .client-overview .card-header h2 {
+    font-size: 14px;
+  }
+  .auth-story {
+    padding-inline: 38px;
+  }
+  .auth-panel {
+    padding-inline: 38px;
+  }
+  .auth-story h1 {
+    font-size: 55px;
+  }
+  .auth-art {
+    margin-inline: auto;
+  }
+  .art-chip {
+    right: 0;
+    font-size: 9px;
+  }
+}
+@media (max-width: 980px) and (min-width: 901px) {
+  .metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .dashboard-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .chart-grid {
+    grid-template-columns: 1fr;
+  }
+  .withdraw-grid {
+    grid-template-columns: 1fr;
+  }
+  .withdraw-summary {
+    position: static;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .withdraw-summary > .mini-note {
+    grid-column: 1/-1;
+  }
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
+  .settings-grid > aside {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+  .client-overview {
+    grid-template-columns: 1fr 1fr;
+  }
+  .client-overview > .card:last-child {
+    grid-column: 1/-1;
+  }
+  .overview-banner {
+    padding: 24px;
+  }
+  .overview-banner > div > strong {
+    font-size: 30px;
+  }
+  .overview-side {
+    flex-direction: column;
+    gap: 10px;
+    align-items: flex-start;
+  }
+  .overview-stat {
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
+  }
+  .overview-stat b {
+    font-size: 20px;
+  }
+  .page-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+@media (max-width: 900px) {
+  .sidebar {
+    width: 270px;
+    padding: 28px 18px 20px;
+    transform: translateX(-101%);
+    visibility: hidden;
+    transition:
+      transform 0.22s,
+      visibility 0.22s;
+    z-index: 60;
+    box-shadow: 5px 0 40px #1135490f;
+  }
+  .nav-open .sidebar {
+    transform: translateX(0);
+    visibility: visible;
+  }
+  .nav-open {
+    overflow: hidden;
+  }
+  .sidebar-backdrop {
+    position: fixed;
+    inset: 0;
+    background: #153b565e;
+    backdrop-filter: blur(3px);
+    border: 0;
+    z-index: 55;
+    width: 100%;
+    height: 100%;
+  }
+  .sidebar-brand .mobile-only {
+    display: inline-flex;
+  }
+  .workspace {
+    margin-left: 0;
+  }
+  .mobile-only {
+    display: inline-flex;
+  }
+  .topbar {
+    height: 74px;
+    padding: 0 24px;
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    backdrop-filter: blur(15px);
+  }
+  .topbar-start {
+    gap: 10px;
+  }
+  .breadcrumb {
+    display: none;
+  }
+  .mobile-brand {
+    display: block;
+  }
+  .mobile-brand .brand {
+    font-size: 25px;
+    gap: 8px;
+  }
+  .mobile-brand .brand img {
+    width: 29px;
+    height: 29px;
+  }
+  .topbar-end {
+    gap: 14px;
+  }
+  .profile-link {
+    padding-left: 13px;
+  }
+  .profile-copy {
+    display: none;
+  }
+  .profile-link > .icon {
+    display: none;
+  }
+  .topbar .avatar {
+    width: 34px;
+    height: 34px;
+    font-size: 14px;
+  }
+  .main-content {
+    padding: 27px 24px 85px;
+  }
+  .bottom-nav {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: calc(66px + env(safe-area-inset-bottom));
+    padding: 7px 12px calc(7px + env(safe-area-inset-bottom));
+    background: #ffffffed;
+    backdrop-filter: blur(15px);
+    border-top: 1px solid var(--line);
+    z-index: 45;
+  }
+  .bottom-nav a {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    font-size: 10px;
+    color: var(--muted);
+    font-weight: 650;
+    border-radius: 10px;
+  }
+  .bottom-nav a > .icon {
+    width: 20px;
+    height: 20px;
+  }
+  .bottom-nav a.is-active {
+    color: var(--primary);
+    background: #eff8fd;
+  }
+  .dashboard-grid {
+    grid-template-columns: minmax(0, 1.65fr) minmax(240px, 1fr);
+  }
+  .dashboard-lower {
+    grid-template-columns: minmax(0, 1.7fr) minmax(230px, 1fr);
+  }
+  .metric-grid {
+    gap: 13px;
+  }
+  .metric-value {
+    font-size: 23px;
+  }
+  .page-heading {
+    margin-bottom: 24px;
+  }
+  .page-heading h1 {
+    font-size: 29px;
+  }
+  .page-footer {
+    margin-top: 25px;
+  }
+  .auth-story {
+    padding: 35px 30px 25px;
+  }
+  .auth-panel {
+    padding: 30px;
+  }
+  .auth-story h1 {
+    font-size: 46px;
+  }
+  .auth-story-content > p {
+    font-size: 12px;
+  }
+  .auth-art {
+    height: 240px;
+    transform: scale(0.9);
+    transform-origin: center;
+    width: 320px;
+    margin-inline: auto;
+  }
+  .auth-main {
+    max-width: 340px;
+  }
+  .auth-heading h2 {
+    font-size: 30px;
+  }
+  .auth-story-footer {
+    font-size: 9px;
+  }
+}
+@media (min-width: 721px) {
+  .auth-passwords {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (min-width: 721px) and (max-height: 850px) {
+  .auth-story,
+  .auth-panel {
+    padding-block: 20px;
+  }
+  .auth-story-content,
+  .auth-main {
+    padding-block: 12px;
+  }
+  .auth-story h1 {
+    font-size: clamp(36px, 3.8vw, 50px);
+  }
+  .story-label {
+    margin-bottom: 16px;
+  }
+  .auth-story-content > p {
+    margin-top: 16px;
+  }
+  .auth-art {
+    height: 210px;
+    margin-top: 20px;
+    margin-bottom: 0;
+    scale: 0.85;
+    transform-origin: top center;
+  }
+  .art-chip {
+    bottom: -32px;
+  }
+  .auth-heading,
+  .auth-heading.compact {
+    margin-bottom: 20px;
+  }
+  .auth-heading-icon {
+    width: 36px;
+    height: 36px;
+  }
+  .auth-heading-icon,
+  .auth-heading.compact .auth-heading-icon {
+    margin-bottom: 14px;
+  }
+  .auth-heading .eyebrow {
+    margin-bottom: 8px;
+  }
+  .auth-heading h2,
+  .auth-heading.compact h2 {
+    font-size: 28px;
+  }
+  .auth-heading > p:not(.eyebrow) {
+    margin-top: 10px;
+    line-height: 1.7;
+  }
+  .auth-main .form-stack {
+    gap: 12px;
+  }
+  .auth-main .field label {
+    margin-bottom: 6px;
+  }
+  .auth-main .field input {
+    height: 44px;
+    min-height: 44px;
+  }
+  .auth-main .button-large {
+    min-height: 44px;
+  }
+  .auth-divider {
+    margin: 18px 0 14px;
+  }
+  .auth-footnote,
+  .auth-switch {
+    margin-top: 16px;
+  }
+  .auth-main .field-hint {
+    margin-top: 0;
+    font-size: 11px;
+  }
+  .auth-main .back-link {
+    margin-bottom: 18px;
+  }
+}
+@media (min-width: 721px) and (max-height: 700px) {
+  .auth-story,
+  .auth-panel {
+    padding-block: 14px;
+  }
+  .auth-main {
+    padding-block: 0;
+  }
+  .auth-heading-icon {
+    display: none;
+  }
+  .auth-heading,
+  .auth-heading.compact {
+    margin-bottom: 16px;
+  }
+  .auth-main .form-stack {
+    gap: 10px;
+  }
+  .auth-main .field label {
+    margin-bottom: 4px;
+  }
+  .auth-main .field input {
+    height: 42px;
+    min-height: 42px;
+    padding-block: 8px;
+  }
+  .auth-switch {
+    margin-top: 12px;
+  }
+}
+@media (max-width: 720px) {
+  .dashboard-grid,
+  .dashboard-lower,
+  .chart-grid,
+  .settings-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .account-card .account-person {
+    flex-direction: row;
+    flex-wrap: wrap;
+    column-gap: 14px;
+    text-align: left;
+    justify-content: flex-start;
+    padding: 0;
+  }
+  .account-card .account-person .avatar {
+    width: 45px;
+    height: 45px;
+    grid-row: 1/3;
+  }
+  .account-card .account-person h2 {
+    margin: 0;
+    flex: 1;
+  }
+  .account-card .account-person p {
+    width: 100%;
+    margin: 8px 0 0;
+  }
+  .account-card .detail-list {
+    margin-top: 10px;
+  }
+  .wallet-card {
+    min-height: 280px;
+  }
+  .wallet-main {
+    flex-wrap: nowrap;
+    margin: 24px 0;
+  }
+  .wallet-amount {
+    font-size: 36px;
+  }
+  .dashboard-lower > aside {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+  .metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .metric-grid-three > .metric:last-child {
+    grid-column: 1/-1;
+  }
+  .metric-top {
+    font-size: 12px;
+  }
+  .metric-value {
+    font-size: 26px;
+  }
+  .metric-detail {
+    font-size: 11px;
+  }
+  .page-heading {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 16px;
+  }
+  .page-actions {
+    gap: 8px;
+    width: 100%;
+  }
+  .page-heading > .page-actions > .period-chip {
+    margin-top: 0;
+  }
+  .page-actions .button {
+    min-height: 40px;
+    font-size: 12px;
+  }
+  .overview-banner {
+    padding: 25px;
+    align-items: flex-start;
+    gap: 20px;
+    flex-wrap: wrap;
+  }
+  .overview-side {
+    width: 100%;
+    padding-top: 15px;
+    border-top: 1px solid #ffffff1c;
+    justify-content: flex-start;
+    gap: 30px;
+  }
+  .overview-stat {
+    padding-left: 0;
+    border: 0;
+    flex: 1;
+  }
+  .overview-stat b {
+    font-size: 24px;
+  }
+  .overview-side > .button {
+    display: none;
+  }
+  .overview-tag {
+    margin-bottom: 16px;
+  }
+  .overview-banner > div > strong {
+    font-size: 35px;
+  }
+  .card-header {
+    padding: 20px;
+  }
+  .card-body {
+    padding: 20px;
+  }
+  .filter-bar {
+    padding: 18px 20px;
+    gap: 12px;
+  }
+  .filter-bar .field {
+    flex: 1 1 calc(50% - 12px);
+  }
+  .filter-bar .field-search {
+    flex-basis: 100%;
+  }
+  .filter-bar .button {
+    flex: 1;
+  }
+  .withdraw-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .withdraw-summary {
+    position: static;
+    grid-row: auto;
+  }
+  .withdraw-grid > .card .card-body {
+    padding: 22px;
+  }
+  .client-overview {
+    grid-template-columns: 1fr;
+  }
+  .client-overview .card-header {
+    min-height: 67px;
+  }
+  .client-overview .card-body {
+    padding-top: 9px;
+  }
+  .client-overview .detail-list > div {
+    padding: 8px 0;
+  }
+  .mini-overview {
+    padding: 18px;
+    gap: 13px;
+    flex-wrap: wrap;
+  }
+  .mini-overview-divider {
+    display: none;
+  }
+  .mini-overview > p {
+    flex-basis: 100%;
+    max-width: 100%;
+    padding-top: 12px;
+    border-top: 1px solid var(--line);
+  }
+  .section-header {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .compact-filter {
+    width: 100%;
+  }
+  .compact-filter .field {
+    flex: 1;
+  }
+  .compact-filter .field select {
+    width: 100%;
+    max-width: 100%;
+  }
+  .auth-shell {
+    display: flex;
+    flex-direction: column;
+  }
+  .auth-story {
+    min-height: 0;
+    padding: 27px 28px 25px;
+    border-right: 0;
+    border-bottom: 1px solid #e4f0f8;
+  }
+  .auth-story-content {
+    padding: 28px 0 0;
+    max-width: none;
+    margin: 0;
+  }
+  .auth-story h1 {
+    font-size: 34px;
+    line-height: 1.15;
+    letter-spacing: -0.05em;
+  }
+  .auth-story h1 br {
+    display: none;
+  }
+  .auth-story h1 > span {
+    display: block;
+  }
+  .auth-story-content > p {
+    font-size: 12px;
+    margin-top: 12px;
+    max-width: 320px;
+  }
+  .auth-story-content > p br {
+    display: none;
+  }
+  .story-label {
+    font-size: 9px;
+    letter-spacing: 0.1em;
+    margin-bottom: 14px;
+  }
+  .auth-art,
+  .auth-story-footer {
+    display: none;
+  }
+  .auth-logo .brand {
+    font-size: 28px;
+  }
+  .auth-logo .brand img {
+    width: 32px;
+    height: 32px;
+  }
+  .auth-panel {
+    min-height: 0;
+    flex: 1;
+    padding: 0 28px 24px;
+  }
+  .auth-main {
+    max-width: 420px;
+    margin: 0 auto;
+    padding: 30px 0 36px;
+  }
+  .auth-heading-icon {
+    display: none;
+  }
+  .auth-heading h2,
+  .auth-heading.compact h2 {
+    font-size: 28px;
+  }
+  .auth-heading h2 br {
+    display: none;
+  }
+  .auth-heading {
+    margin-bottom: 23px;
+  }
+  .auth-heading .eyebrow {
+    font-size: 9px;
+    margin-bottom: 11px;
+  }
+  .auth-heading > p:not(.eyebrow) {
+    font-size: 13px;
+    margin-top: 10px;
+  }
+  .auth-main .field label {
+    font-size: 13px;
+  }
+  .auth-main .field input {
+    font-size: 14px;
+    min-height: 48px;
+  }
+  .auth-main .field input::placeholder {
+    font-size: 14px;
+  }
+  .auth-main .text-link {
+    font-size: 13px;
+  }
+  .auth-main .button-large {
+    min-height: 48px;
+    font-size: 14px;
+  }
+  .auth-footnote {
+    font-size: 11px;
+  }
+  .auth-footer {
+    font-size: 10px;
+    max-width: 420px;
+    width: 100%;
+    margin: auto;
+  }
+  .auth-switch {
+    font-size: 13px;
+  }
+  .dialog {
+    max-height: calc(100dvh - 28px);
+    padding: 22px;
+    border-radius: 17px;
+  }
+  .dialog-actions {
+    flex-wrap: wrap;
+  }
+  .dialog-actions .button {
+    flex: 1;
+    white-space: nowrap;
+  }
+  .dialog-header h2 {
+    font-size: 19px;
+  }
+  .data-table th,
+  .data-table td {
+    padding-inline: 17px;
+  }
+  .settings-grid > .stack > .card .card-body {
+    padding: 22px;
+  }
+}
+@media (max-width: 440px) {
+  .topbar {
+    padding-inline: 15px;
+    height: 66px;
+  }
+  .topbar-start {
+    gap: 5px;
+  }
+  .topbar-end {
+    gap: 8px;
+  }
+  .topbar .help-button {
+    width: 29px;
+    height: 29px;
+  }
+  .profile-link {
+    padding-left: 9px;
+  }
+  .main-content {
+    padding: 24px 17px 85px;
+  }
+  .page-heading h1 {
+    font-size: 27px;
+    line-height: 1.3;
+  }
+  .page-description {
+    font-size: 13px;
+    line-height: 1.8;
+  }
+  .eyebrow {
+    font-size: 10px;
+  }
+  .metric-grid {
+    gap: 10px;
+  }
+  .metric {
+    padding: 15px;
+  }
+  .metric-value {
+    font-size: 22px;
+    margin-top: 12px;
+  }
+  .metric-top {
+    font-size: 11px;
+    gap: 5px;
+  }
+  .metric-icon {
+    width: 25px;
+    height: 25px;
+  }
+  .metric-icon .icon {
+    width: 14px;
+    height: 14px;
+  }
+  .metric-detail {
+    font-size: 10px;
+  }
+  .wallet-card {
+    padding: 23px 21px;
+    min-height: 290px;
+  }
+  .wallet-main {
+    gap: 14px;
+    align-items: flex-start;
+    flex-direction: column;
+    margin-top: 23px;
+  }
+  .wallet-main .button {
+    min-height: 34px;
+    font-size: 12px;
+  }
+  .wallet-amount {
+    font-size: 35px;
+  }
+  .wallet-progress-label {
+    font-size: 9px;
+  }
+  .wallet-bottom {
+    margin-top: 17px;
+    font-size: 9px;
+  }
+  .wallet-caption {
+    font-size: 11px;
+  }
+  .wallet-label {
+    font-size: 9px;
+  }
+  .wallet-cycle {
+    font-size: 10px;
+  }
+  .page-footer {
+    gap: 10px;
+    font-size: 10px;
+  }
+  .footer-confidential {
+    font-size: 10px;
+  }
+  .card-header {
+    padding: 19px 18px;
+    gap: 10px;
+    align-items: flex-start;
+  }
+  .card-header h2 {
+    font-size: 15px;
+  }
+  .card-header p {
+    font-size: 11px;
+  }
+  .card-header .text-link {
+    font-size: 11px;
+    white-space: nowrap;
+  }
+  .card-header .text-link > .icon {
+    width: 12px;
+    height: 12px;
+  }
+  .count-pill {
+    min-width: 21px;
+    height: 21px;
+    font-size: 11px;
+  }
+  .approval-card .card-header h2 {
+    font-size: 14px;
+  }
+  .filter-bar {
+    padding: 17px;
+  }
+  .filter-bar .field {
+    flex-basis: calc(50% - 12px);
+  }
+  .filter-bar input,
+  .filter-bar select {
+    font-size: 13px;
+  }
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+  .field-full,
+  .form-section-title {
+    grid-column: auto;
+  }
+  .dialog-actions.field-full {
+    grid-column: auto;
+  }
+  .field input,
+  .field select,
+  .field textarea {
+    font-size: 16px;
+    min-height: 45px;
+  }
+  .field label {
+    font-size: 13px;
+  }
+  .product-option-body {
+    padding: 13px;
+    min-height: 125px;
+  }
+  .product-option-body > strong {
+    font-size: 13px;
+  }
+  .product-option-body > span:last-of-type {
+    font-size: 10px;
+  }
+  .product-options {
+    gap: 9px;
+  }
+  .step-indicator {
+    gap: 9px;
+  }
+  .step {
+    gap: 6px;
+    font-size: 10px;
+  }
+  .step b {
+    width: 22px;
+    height: 22px;
+    font-size: 11px;
+  }
+  .step-line {
+    min-width: 3px;
+  }
+  .amount-presets {
+    gap: 6px;
+  }
+  .amount-preset {
+    font-size: 10px;
+    padding: 7px 8px;
+  }
+  .overview-banner {
+    padding: 23px;
+  }
+  .overview-banner > div > strong {
+    font-size: 32px;
+  }
+  .cycle-grid {
+    gap: 7px;
+  }
+  .cycle-stat {
+    padding: 11px 9px;
+  }
+  .cycle-stat span {
+    font-size: 10px;
+  }
+  .cycle-stat strong {
+    font-size: 22px;
+  }
+  .mini-overview strong {
+    font-size: 24px;
+  }
+  .mini-overview span {
+    font-size: 11px;
+  }
+  .table-footer {
+    padding: 14px;
+    gap: 8px;
+  }
+  .table-footer > span {
+    font-size: 10px;
+  }
+  .pagination-label {
+    min-width: 52px;
+    font-size: 10px;
+  }
+  .pagination .button {
+    min-height: 30px;
+    padding: 4px 7px;
+  }
+  .auth-story {
+    padding: 24px 24px 23px;
+  }
+  .auth-story-content {
+    padding-top: 23px;
+  }
+  .auth-story h1 {
+    font-size: 31px;
+  }
+  .auth-panel {
+    padding-inline: 24px;
+  }
+  .auth-main {
+    padding-top: 27px;
+  }
+  .auth-heading h2,
+  .auth-heading.compact h2 {
+    font-size: 27px;
+  }
+  .auth-main .field input {
+    font-size: 16px;
+  }
+  .auth-main .field input::placeholder {
+    font-size: 13px;
+  }
+  .auth-story-content > p {
+    font-size: 11px;
+  }
+  .auth-heading > p:not(.eyebrow) {
+    font-size: 12px;
+  }
+  .auth-main .button-secondary {
+    font-size: 13px;
+  }
+  .auth-divider {
+    margin-top: 23px;
+  }
+  .dialog-small {
+    padding: 23px;
+  }
+  .dialog > h2 {
+    font-size: 22px;
+  }
+  .mini-note {
+    font-size: 11px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *:before,
+  *:after {
+    scroll-behavior: auto !important;
+    animation: none !important;
+    transition: none !important;
+  }
+  .button:hover {
+    transform: none;
+  }
+}
+@media print {
+  .sidebar,
+  .topbar,
+  .bottom-nav,
+  .page-actions,
+  .filter-bar,
+  .page-footer,
+  dialog,
+  .row-actions,
+  .pagination,
+  .sidebar-backdrop {
+    display: none !important;
+  }
+  .workspace {
+    margin: 0;
+  }
+  .main-content {
+    padding: 0;
+    max-width: 100%;
+  }
+  .app-body {
+    background: #fff;
+  }
+  .card,
+  .metric {
+    box-shadow: none;
+    break-inside: avoid;
+  }
+  .table-scroll {
+    overflow: visible;
+  }
+  .data-table {
+    white-space: normal;
+  }
+  .data-table td,
+  .data-table th {
+    font-size: 10px;
+    padding: 8px;
+  }
+  .table-footer {
+    display: none;
+  }
+  .main-content * {
+    animation: none !important;
+  }
+  .page-heading {
+    margin-top: 15px;
+  }
+}

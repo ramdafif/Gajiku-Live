@@ -1,0 +1,29 @@
+{% extends 'layouts/auth.html' %}
+{% block title %}Masuk{% endblock %}
+{% block auth_content %}
+<div class="auth-heading">
+  <span class="auth-heading-icon">{{ icon('wallet') }}</span>
+  <p class="eyebrow">AKUN GAJIKU</p>
+  <h2>Masuk ke <span class="text-brand">Gajiku</span>
+  </h2>
+  <p>Masuk dengan email dan password terdaftar.</p>
+</div>
+<form action="{{ url_for('web.login') }}" method="post" class="form-stack" data-loading-form>
+  {{ csrf() }}
+  <div class="field">
+    <label for="email">Email</label>
+    <div class="input-wrap has-leading">{{ icon('mail') }}<input id="email" name="email" type="email" value="{{ request.form.get('email', '') }}" placeholder="nama@perusahaan.com" autocomplete="username" maxlength="255" required>
+    </div>
+  </div>
+  {{ password_field('password', 'Password', 'current-password', 1) }}
+  <div class="form-inline-end">
+    <a href="{{ url_for('web.forgot_password') }}" class="text-link">Lupa password?</a>
+  </div>
+  <button type="submit" class="button button-primary button-full button-large" data-loading-text="Memeriksa akun...">Masuk ke Gajiku {{ icon('arrow-right') }}</button>
+</form>
+<div class="auth-divider">
+  <span>Baru di Gajiku?</span>
+</div>
+<a href="{{ url_for('web.register') }}" class="button button-secondary button-full">Buat akun pegawai</a>
+<p class="auth-footnote">{{ icon('shield') }} Akses akun sesuai perusahaan dan peranmu.</p>
+{% endblock %}

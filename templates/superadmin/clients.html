@@ -1,0 +1,106 @@
+{% extends 'layouts/base.html' %}
+{% from 'components/macros.html' import icon, csrf, page_heading, empty_state with context %}
+{% from 'components/client_fields.html' import client_fields with context %}
+{% block title %}Kelola Perusahaan{% endblock %}
+{% block breadcrumb %}Kelola perusahaan{% endblock %}
+{% block content %}
+{% call page_heading('PERUSAHAAN', 'Kelola Perusahaan', 'Kelola data perusahaan, penanggung jawab, MoU, dan project.') %}
+<button type="button" class="button button-primary" data-dialog="client-add">{{ icon('plus') }} Tambah perusahaan</button>
+{% endcall %}
+<section class="card">
+  <div class="card-header">
+    <div>
+      <h2>Daftar perusahaan</h2>
+      <p>Data dan pengaturan akses perusahaan.</p>
+    </div>
+    <span class="badge badge-neutral">{{ clients|length }} perusahaan</span>
+  </div>
+  <form method="get" class="filter-bar">
+    <div class="field field-search">
+      <label for="client-q">Cari perusahaan atau PIC</label>
+      <div class="input-wrap has-leading">{{ icon('search') }}<input type="search" name="q" id="client-q" value="{{ q }}" placeholder="Nama PT, PIC, atau email admin...">
+      </div>
+    </div>
+    <div class="field">
+      <label for="client-mou">Status MoU</label>
+      <select id="client-mou" name="mou">
+        <option value="">Semua status</option>
+        {% for value,label in [('valid','Berlaku'),('soon','Segera berakhir'),('ended','Berakhir'),('upcoming','Belum dimulai'),('missing','Belum dicatat')] %}
+        <option value="{{ value }}"{% if mou_filter == value %} selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <button class="button button-primary" type="submit">{{ icon('filter') }} Terapkan</button>
+    <a class="button button-secondary" href="{{ url_for('clients.superadmin_clients') }}">Reset</a>
+  </form>
+  {% if clients %}
+  <div class="table-scroll" tabindex="0" role="region" aria-label="Daftar perusahaan mitra">
+    <table class="data-table" data-paginate="10">
+      <thead>
+        <tr>
+          <th scope="col">Perusahaan</th>
+          <th scope="col">PIC</th>
+          <th scope="col">Akun admin</th>
+          <th scope="col">Cakupan</th>
+          <th scope="col">Status MoU</th>
+          <th scope="col" class="text-right">Detail</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for client in clients %}
+        <tr>
+          <td>
+            <div class="cell-person">
+              <span class="company-avatar">{{ icon('building') }}</span>
+              <span>
+                <strong>{{ client.name }}</strong>
+                <small>{{ client.email or 'Email belum tercatat' }}</small>
+                <small>{{ client.phone or '-' }}</small>
+              </span>
+            </div>
+          </td>
+          <td>
+            <strong>{{ client.pic_name or '-' }}</strong>
+            <small>{{ client.pic_role or '-' }}</small>
+            <small>{{ client.pic_email or client.pic_phone or '-' }}</small>
+          </td>
+          <td>
+            {% for admin in client.admins[:2] %}
+            <strong>{{ admin.name }}</strong>
+            <small>{{ admin.email }}</small>
+            {% else %}
+            <span class="text-muted">Belum ada admin</span>
+            {% endfor %}{% if client.admins|length > 2 %}
+            <small>+{{ client.admins|length - 2 }} admin lainnya</small>
+            {% endif %}
+          </td>
+          <td>
+            <strong>{{ client.employee_count }} pegawai</strong>
+            <small>{{ client.project_count }} project &middot; {{ 'Diizinkan' if client.allow_projects else 'Tanpa project' }}</small>
+          </td>
+          <td>
+            <span class="badge {{ 'badge-success' if client.mou_status == 'valid' else 'badge-danger' if client.mou_status == 'ended' else 'badge-warning' if client.mou_status == 'soon' else 'badge-neutral' }}">{{ client.mou_label }}</span>
+            <small>{{ client.mou_end|indo_date if client.mou_end else 'Tanggal belum diisi' }}</small>
+          </td>
+          <td class="text-right">
+            <a href="{{ url_for('clients.superadmin_client_detail', client_id=client.id) }}" class="button button-secondary button-small">Lihat detail {{ icon('arrow-up-right') }}</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}{{ empty_state('Belum ada perusahaan yang cocok', 'Tambahkan perusahaan atau ubah filter pencarian.', 'building') }}{% endif %}
+</section>
+<dialog id="client-add" class="dialog" aria-labelledby="client-add-title">
+  <div class="dialog-header">
+    <h2 id="client-add-title">Tambah perusahaan</h2>
+    <button type="button" class="icon-button" data-close-dialog aria-label="Tutup">{{ icon('close') }}</button>
+  </div>
+  <form action="{{ url_for('clients.superadmin_clients') }}" method="post" data-mou-range data-loading-form>{{ csrf() }}{{ client_fields(none, 'client-add') }}<div class="dialog-actions">
+      <button type="button" class="button button-secondary" data-close-dialog>Batal</button>
+      <button class="button button-primary" type="submit">Simpan perusahaan</button>
+    </div>
+  </form>
+</dialog>
+{% endblock %}

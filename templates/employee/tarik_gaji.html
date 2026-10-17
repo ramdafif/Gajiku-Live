@@ -1,0 +1,192 @@
+{% extends 'layouts/base.html' %}
+{% from 'components/macros.html' import icon, csrf, page_heading with context %}
+{% block title %}Tarik Gaji{% endblock %}
+{% block breadcrumb %}Tarik gaji{% endblock %}
+{% block content %}
+{{ page_heading('PENGAJUAN', 'Tarik Gaji', 'Pilih nominal, periksa biaya, lalu kirim pengajuan.') }}
+<div class="step-indicator">
+  <span class="step is-current">
+    <b>1</b> Isi pengajuan</span>
+  <span class="step-line">
+  </span>
+  <span class="step">
+    <b>2</b> Periksa rincian</span>
+  <span class="step-line">
+  </span>
+  <span class="step">
+    <b>3</b> Kirim pengajuan</span>
+</div>
+<div class="withdraw-grid">
+  <section class="card">
+    <div class="card-header">
+      <div>
+        <h2>Pengajuan tarik gaji</h2>
+        <p>Semua rincian dalam satu langkah.</p>
+      </div>{{ icon('wallet') }}</div>
+    {% if enabled_products and rekening_options %}
+    <form action="{{ url_for('web.tarik_gaji') }}" method="post" class="card-body form-stack" id="withdrawal-form" data-withdrawal data-loading-form>
+      {{ csrf() }}<input type="hidden" name="request_token" value="{{ request_token }}">
+      {% if config.get('ALLOW_DATE_OVERRIDE') %}
+      <input type="hidden" name="tanggal" value="{{ at_date.day }}">
+      {% endif %}
+      <fieldset class="product-fieldset">
+        <legend class="field-label">Pilihan akses gaji</legend>
+        <div class="product-options">
+          {% for product in enabled_products %}
+          <label class="product-option">
+            <input type="radio" name="produk" value="{{ product }}" required{% if product == selected_product %} checked{% endif %}>
+            <span class="product-option-body">
+              <span class="product-icon">{{ icon('wallet' if product == 'reg' else 'spark') }}</span>
+              <strong>{{ 'Reguler' if product == 'reg' else 'Urgent' }} <small>{{ product|upper }}</small>
+              </strong>
+              <span>{{ 'Dari saldo yang terakumulasi' if product == 'reg' else 'Dari sisa plafon tersedia' }}</span>
+              <i class="radio-indicator">
+              </i>
+            </span>
+          </label>
+          {% endfor %}
+        </div>
+      </fieldset>
+      <div class="field">
+        <label for="nominal">Nominal pengajuan</label>
+        <div class="currency-input">
+          <span>Rp</span>
+          <input id="nominal" name="nominal" type="text" inputmode="numeric" pattern="[0-9.]+" autocomplete="off" maxlength="14" required placeholder="0" data-currency value="{{ request.form.get('nominal', '') }}" aria-describedby="nominal-hint nominal-error">
+        </div>
+        <p class="field-hint" id="nominal-hint">Batas pengajuan saat ini: <strong data-limit-label>{{ ([limits.saldo, REG_WITHDRAWAL_MAX]|min if selected_product == 'reg' else limits.sisa_plafon)|rupiah }}</strong>
+        </p>
+        <p id="nominal-error" class="field-error" data-amount-error role="alert" hidden>
+        </p>
+        <div class="amount-presets">
+          <button class="amount-preset" type="button" data-preset="100000">Rp100.000</button>
+          <button class="amount-preset" type="button" data-preset="250000">Rp250.000</button>
+          <button class="amount-preset" type="button" data-preset="500000">Rp500.000</button>
+          <button class="amount-preset" type="button" data-preset="max">Maksimal</button>
+        </div>
+      </div>
+      <div class="field">
+        <label for="rekening_tujuan_key">Rekening tujuan</label>
+        <select id="rekening_tujuan_key" name="rekening_tujuan_key" required>
+          {% for option in rekening_options %}
+          <option value="{{ option.key }}" data-account="{{ option.value }}"{% if option.key == selected_rekening_key %} selected{% endif %}>{{ option.label }} &middot; {{ option.value }}</option>
+          {% endfor %}
+        </select>
+        <p class="field-hint">Rekening mengikuti data pegawai yang dikelola perusahaan.</p>
+      </div>
+      <div class="field">
+        <label for="keterangan">Catatan <span class="optional">(opsional)</span>
+        </label><textarea id="keterangan" name="keterangan" rows="2" maxlength="500" placeholder="Tambahkan catatan untuk pengajuan ini">{{ request.form.get('keterangan', '') }}</textarea></div>
+      <div class="notice notice-info">{{ icon('info') }}<span>Pengajuan mengikuti persetujuan perusahaan. Periksa rincian biaya sebelum melanjutkan.</span>
+      </div>
+      <button class="button button-primary button-large button-full" type="submit" data-loading-text="Mengirim pengajuan...">Periksa pengajuan {{ icon('arrow-right') }}</button>
+      <noscript>
+        <p class="field-hint">Preview interaktif membutuhkan JavaScript. Tanpa JavaScript, tombol ini langsung mengirim pengajuan dengan biaya yang divalidasi server.</p>
+      </noscript>
+    </form>
+    {% else %}
+    <div class="card-body">
+      <div class="notice notice-warning">{{ icon('info') }}<span>{{ 'Belum ada rekening tujuan terdaftar. Hubungi admin perusahaan untuk memperbarui data rekening.' if not rekening_options else 'Belum ada produk yang diaktifkan untuk perusahaanmu.' }}</span>
+      </div>
+      <a href="{{ url_for('web.dashboard') }}" class="button button-secondary">Kembali ke beranda</a>
+    </div>
+    {% endif %}
+  </section>
+  <aside class="stack withdraw-summary">
+    <section class="card">
+      <div class="card-header">
+        <h2>Ringkasan gaji</h2>{{ icon('chart') }}</div>
+      <div class="card-body">
+        <p class="text-small text-muted">Saldo reguler tersedia</p>
+        <strong class="summary-balance amount">{{ limits.saldo|rupiah }}</strong>
+        <dl class="detail-list">
+          <div>
+            <dt>Sisa plafon</dt>
+            <dd>{{ limits.sisa_plafon|rupiah }}</dd>
+          </div>
+          <div>
+            <dt>Akumulasi per hari</dt>
+            <dd>{{ limits.limit_harian|rupiah }}</dd>
+          </div>
+          <div>
+            <dt>Periode berjalan</dt>
+            <dd>Hari ke-{{ limits.hari_ke }}</dd>
+          </div>
+          <div>
+            <dt>Skema</dt>
+            <dd>{{ 'Cutoff mingguan' if limits.cutoff_mingguan else 'Siklus ' ~ limits.siklus }}</dd>
+          </div>
+        </dl>
+      </div>
+    </section>
+    <section class="card">
+      <div class="card-body">
+        <p class="eyebrow">RINCIAN BIAYA</p>
+        <h3>Estimasi pengajuan</h3>
+        <dl class="detail-list">
+          <div>
+            <dt>Nominal pengajuan</dt>
+            <dd data-preview-amount>Rp0</dd>
+          </div>
+          <div>
+            <dt>Biaya admin{% if ppn_enabled %} + PPN{% endif %}
+            </dt>
+            <dd data-preview-fee>Rp0</dd>
+          </div>
+          <div class="detail-total">
+            <dt>Total kewajiban</dt>
+            <dd data-preview-total>Rp0</dd>
+          </div>
+        </dl>
+        <p class="field-hint">{{ 'Biaya admin termasuk PPN 11%. ' if ppn_enabled else '' }}Nilai akhir dan kelayakan dihitung kembali oleh server.</p>
+      </div>
+    </section>
+    <div class="mini-note">{{ icon('shield') }}<p>Sesuaikan nominal pengajuan dengan kebutuhan dan sisa plafon.</p>
+    </div>
+  </aside>
+</div>
+<dialog class="dialog dialog-small" id="withdrawal-review" aria-labelledby="review-title">
+  <div class="dialog-header">
+    <span class="dialog-emblem">{{ icon('receipt') }}</span>
+    <button type="button" class="icon-button" data-close-dialog aria-label="Tutup rincian">{{ icon('close') }}</button>
+  </div>
+  <p class="eyebrow">TINJAU PENGAJUAN</p>
+  <h2 id="review-title">Konfirmasi Pengajuan</h2>
+  <p>Pengajuan atas nama {{ user.name }}{% if pegawai_info %} &middot; {{ pegawai_info.id_pegawai }}{% endif %}.</p>
+  <dl class="detail-list invoice-list">
+    <div>
+      <dt>Produk</dt>
+      <dd data-review-product>
+      </dd>
+    </div>
+    <div>
+      <dt>Rekening tujuan</dt>
+      <dd data-review-account>
+      </dd>
+    </div>
+    <div>
+      <dt>Nominal pengajuan</dt>
+      <dd data-review-amount>
+      </dd>
+    </div>
+    <div>
+      <dt>Biaya admin{% if ppn_enabled %} + PPN{% endif %}
+      </dt>
+      <dd data-review-fee>
+      </dd>
+    </div>
+    <div class="detail-total">
+      <dt>Total kewajiban</dt>
+      <dd data-review-total>
+      </dd>
+    </div>
+  </dl>
+  <div class="notice notice-info">{{ icon('info') }}<span>Ini adalah pengajuan, bukan konfirmasi transfer. Status akhir mengikuti persetujuan dan proses operasional.</span>
+  </div>
+  <div class="dialog-actions">
+    <button type="button" class="button button-secondary" data-close-dialog>Periksa lagi</button>
+    <button type="button" class="button button-primary" data-withdraw-confirm>Ya, kirim pengajuan {{ icon('arrow-right') }}</button>
+  </div>
+</dialog>
+<script type="application/json" id="withdrawal-config">{{ {'saldo': limits.saldo, 'plafon': limits.plafon, 'sisaPlafon': limits.sisa_plafon, 'totalUsed': limits.total_sukses, 'dailyLimit': limits.limit_harian, 'day': limits.hari_ke, 'regMax': REG_WITHDRAWAL_MAX, 'fee': ADMIN_FEE, 'ppn': ppn_enabled}|tojson }}</script>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='withdrawal.js') }}?v=20261017" defer></script>{% endblock %}

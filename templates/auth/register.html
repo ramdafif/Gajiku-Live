@@ -1,0 +1,30 @@
+{% extends 'layouts/auth.html' %}
+{% block title %}Daftar Akun{% endblock %}
+{% block auth_content %}
+<div class="auth-heading compact">
+  <span class="auth-heading-icon">{{ icon('user') }}</span>
+  <p class="eyebrow">PENDAFTARAN</p>
+  <h2>Daftar Akun
+  </h2>
+  <p>Daftar dengan email yang sudah didaftarkan HR perusahaanmu.</p>
+</div>
+<form action="{{ url_for('web.register') }}" method="post" class="form-stack" data-loading-form>
+  {{ csrf() }}
+  <div class="field">
+    <label for="name">Nama lengkap</label>
+    <input id="name" name="name" autocomplete="name" maxlength="255" required value="{{ request.form.get('name', '') }}" placeholder="Nama sesuai data pegawai">
+  </div>
+  <div class="field">
+    <label for="email">Email terdaftar</label>
+    <input id="email" name="email" type="email" autocomplete="email" maxlength="255" required value="{{ request.form.get('email', '') }}" placeholder="nama@perusahaan.com">
+  </div>
+  <div class="auth-passwords">
+    {{ password_field('password', 'Password') }}
+    {{ password_field('password2', 'Konfirmasi password') }}
+  </div>
+  <p class="field-hint">Tautan verifikasi akan dikirim ke emailmu. Aktivasi akun mengikuti ketentuan perusahaan.</p>
+  <button type="submit" class="button button-primary button-full button-large" data-loading-text="Mendaftarkan akun...">Buat akun {{ icon('arrow-right') }}</button>
+</form>
+<p class="auth-switch">Sudah punya akun? <a href="{{ url_for('web.login') }}">Masuk di sini</a>
+</p>
+{% endblock %}

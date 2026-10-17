@@ -1,0 +1,82 @@
+{% macro icon(name, class_name='') -%}
+<svg class="icon {{ class_name }}" width="20" height="20" aria-hidden="true">
+  <use href="#i-{{ name }}">
+  </use>
+</svg>
+{%- endmacro %}
+
+{% macro brand() -%}
+<span class="brand">
+  <img src="{{ url_for('static', filename='img/logo_gjku.png') }}" width="35" height="35" alt="">
+  <span>Gajiku<span class="brand-dot">.</span>
+  </span>
+</span>
+{%- endmacro %}
+
+{% macro csrf() -%}
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+{%- endmacro %}
+
+{% macro status_badge(status) -%}
+{% set labels = {'sukses': 'Selesai', 'on-proses': 'Diproses', 'dibatalkan': 'Dibatalkan', 'ditolak': 'Ditolak', 'gagal': 'Gagal'} %}
+<span class="badge {{ 'badge-success' if status == 'sukses' else 'badge-warning' if status == 'on-proses' else 'badge-danger' if status in ['ditolak', 'gagal'] else 'badge-neutral' }}" data-status-badge>
+  <span class="status-dot">
+  </span>{{ labels.get(status, status or '-') }}</span>
+{%- endmacro %}
+
+{% macro product_badge(product) -%}
+<span class="badge {{ 'badge-urgent' if product == 'urg' else 'badge-blue' }}">{{ (product or 'reg')|upper }}</span>
+{%- endmacro %}
+
+{% macro empty_state(title='Belum ada data', description='Data akan tampil di sini ketika sudah tersedia.', icon_name='inbox') -%}
+<div class="empty-state">{{ icon(icon_name) }}<h3>{{ title }}</h3>
+  <p>{{ description }}</p>
+</div>
+{%- endmacro %}
+
+{% macro password_field(name, label, autocomplete='new-password', minimum=6, identifier='') -%}
+{% set input_id = identifier or name %}
+<div class="field">
+  <label for="{{ input_id }}">{{ label }}</label>
+  <div class="input-wrap">
+    <input id="{{ input_id }}" name="{{ name }}" type="password" autocomplete="{{ autocomplete }}" required minlength="{{ minimum }}" placeholder="{{ 'Masukkan password' if autocomplete == 'current-password' else 'Minimal 6 karakter' }}"{% if name in ['password2', 'new_password2'] %} data-match="{{ 'password' if name == 'password2' else 'new_password' }}"{% endif %}>
+    <button type="button" class="input-action" data-password="{{ input_id }}" aria-label="Tampilkan {{ label|lower }}" aria-pressed="false">{{ icon('eye') }}</button>
+  </div>
+</div>
+{%- endmacro %}
+
+{% macro metric(label, value, detail='', icon_name='wallet', accent='') -%}
+<article class="metric {{ accent }}">
+  <div class="metric-top">
+    <span>{{ label }}</span>
+    <span class="metric-icon">{{ icon(icon_name) }}</span>
+  </div>
+  <strong class="metric-value">{{ value }}</strong>
+  {% if detail %}
+  <span class="metric-detail">{{ detail }}</span>
+  {% endif %}
+</article>
+{%- endmacro %}
+
+{% macro page_heading(eyebrow, title, description='') -%}
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">{{ eyebrow }}</p>
+    <h1>{{ title }}</h1>
+    {% if description %}
+    <p class="page-description">{{ description }}</p>
+    {% endif %}
+  </div>
+  {% if caller is defined %}
+  <div class="page-actions">{{ caller() }}</div>
+  {% endif %}
+</div>
+{%- endmacro %}
+
+{% macro avatar(name, image='', size='') -%}
+<span class="avatar {{ size }}">
+  {% if image %}
+  <img src="{{ image }}" alt="Foto profil {{ name }}" width="44" height="44">
+  {% else %}{{ (name or 'G')[:1]|upper }}{% endif %}
+</span>
+{%- endmacro %}

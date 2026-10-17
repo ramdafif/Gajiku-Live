@@ -1,0 +1,20 @@
+{% extends 'layouts/auth.html' %}
+{% block title %}Lupa Password{% endblock %}
+{% block auth_content %}
+<a class="back-link" href="{{ url_for('web.login') }}">{{ icon('arrow-left') }} Kembali ke halaman masuk</a>
+<div class="auth-heading">
+  <span class="auth-heading-icon">{{ icon('lock') }}</span>
+  <p class="eyebrow">PEMULIHAN AKUN</p>
+  <h2>Lupa Password
+  </h2>
+  <p>Masukkan email terdaftar. Jika akun memenuhi ketentuan, kami kirimkan tautan untuk membuat password baru.</p>
+</div>
+<form action="{{ url_for('web.forgot_password') }}" method="post" class="form-stack" data-loading-form>{{ csrf() }}<div class="field">
+    <label for="email">Email terdaftar</label>
+    <div class="input-wrap has-leading">{{ icon('mail') }}<input id="email" name="email" type="email" autocomplete="email" required maxlength="255" placeholder="nama@perusahaan.com" value="{{ request.form.get('email', '') }}">
+    </div>
+  </div>
+  <button type="submit" class="button button-primary button-full button-large" data-loading-text="Mengirim permintaan...">Kirim tautan reset {{ icon('arrow-right') }}</button>
+</form>
+<p class="auth-footnote">{{ icon('info') }} Periksa juga folder spam atau junk email.</p>
+{% endblock %}

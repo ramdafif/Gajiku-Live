@@ -1,0 +1,61 @@
+{% extends 'layouts/base.html' %}
+{% from 'components/macros.html' import icon, page_heading, metric, status_badge, product_badge, empty_state with context %}
+{% block title %}Riwayat Transaksi{% endblock %}
+{% block breadcrumb %}Riwayat transaksi{% endblock %}
+{% block content %}
+{{ page_heading('TRANSAKSI', 'Riwayat Transaksi', 'Lihat status dan rincian pengajuan berdasarkan periode.') }}
+<div class="metric-grid metric-grid-three">{{ metric('Total nominal', total_nom|rupiah, 'Sesuai hasil filter periode', 'wallet', 'accent-blue') }}{{ metric('Total biaya admin', total_admin|rupiah, 'Biaya pada hasil filter', 'receipt') }}{{ metric('Jumlah pengajuan', rows|length, 'Seluruh status pada periode terpilih', 'history') }}</div>
+<section class="card">
+  <div class="card-header">
+    <div>
+      <h2>Semua pengajuan</h2>
+      <p>Rincian sesuai catatan aplikasi.</p>
+    </div>
+    <span class="badge badge-neutral">{{ rows|length }} transaksi</span>
+  </div>
+  <form method="get" class="filter-bar">
+    <div class="field">
+      <label for="periode">Periode transaksi</label>
+      <select name="periode" id="periode">
+        {% for option in periode_options %}
+        <option value="{{ option.value }}"{% if option.value == periode %} selected{% endif %}>{{ option.label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <button class="button button-primary" type="submit">{{ icon('filter') }} Tampilkan</button>
+  </form>
+  {% if rows %}
+  <div class="table-scroll" tabindex="0" role="region" aria-label="Riwayat pengajuan">
+    <table class="data-table" data-paginate="10">
+      <thead>
+        <tr>
+          <th scope="col">Pengajuan</th>
+          <th scope="col">Periode</th>
+          <th scope="col">Produk</th>
+          <th scope="col">Nominal</th>
+          <th scope="col">Biaya admin</th>
+          <th scope="col">Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td>
+            <strong>#{{ row.id }}</strong>
+            <small>{{ row.tanggal|indo_date }}</small>
+          </td>
+          <td>{{ row.periode|format_period_label }}</td>
+          <td>{{ product_badge(row.product) }}</td>
+          <td class="amount">{{ row.nominal|rupiah }}</td>
+          <td>{{ row.admin_fee|rupiah }}</td>
+          <td>{{ status_badge(row.status) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}{{ empty_state('Belum ada transaksi di periode ini', 'Coba pilih periode lain untuk melihat pengajuanmu.', 'history') }}{% endif %}
+</section>
+<div class="mini-note mt-16">{{ icon('info') }}<p>Status selesai adalah catatan final aplikasi. Untuk informasi transfer, hubungi admin perusahaan.</p>
+</div>
+{% endblock %}
