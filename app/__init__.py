@@ -8,6 +8,8 @@ from flask import Flask, redirect, url_for, session, request, g, jsonify
 from app.db import close_db, ensure_db, get_db
 from app.routes.web import bp as web_bp
 from app.routes.clients import bp as clients_bp
+from app.routes.notifications import bp as notifications_bp, management_context, refresh_management_notices
+from app.tasks.company_lifecycle import register_command
 from app.tasks.queue import start_worker
 from app.tasks.export_scheduler import start_export_scheduler
 from app.utils.logging import configure_logging
@@ -79,6 +81,9 @@ def create_app(test_config=None):
 
     app.register_blueprint(web_bp)
     app.register_blueprint(clients_bp)
+    app.register_blueprint(notifications_bp)
+    app.context_processor(management_context)
+    register_command(app)
 
     @app.get("/ping")
     def ping():
@@ -143,6 +148,8 @@ def create_app(test_config=None):
             supplied = request.form.get("csrf_token") or request.headers.get("X-CSRF-Token") or ""
             if not token or not supplied or supplied != token:
                 return ("CSRF token invalid.", 400)
+
+    app.before_request(refresh_management_notices)
 
     @app.after_request
     def add_no_cache(resp):

@@ -1,0 +1,41 @@
+{% extends 'layouts/base.html' %}
+{% from 'components/macros.html' import icon, csrf, page_heading, empty_state with context %}
+{% block title %}Notifikasi{% endblock %}
+{% block breadcrumb %}Notifikasi{% endblock %}
+{% block content %}
+{% call page_heading('PUSAT NOTIFIKASI', 'Notifikasi', 'Riwayat MoU, penagihan, dan akses perusahaan. Status baca hanya berlaku untuk akun Anda.') %}
+  {% if notification_count %}
+  <form method="post" action="{{ url_for('notifications.read_all') }}">{{ csrf() }}
+    <input type="hidden" name="through_id" value="{{ latest_id }}"><input type="hidden" name="status" value="{{ status }}">
+    <button type="submit" class="button button-secondary">Tandai semua dibaca</button>
+  </form>
+  {% endif %}
+{% endcall %}
+<nav class="notification-tabs" aria-label="Filter status baca">
+  {% for value,label in [('unread','Belum Dibaca'),('read','Sudah Dibaca'),('all','Semua')] %}
+  <a href="{{ url_for(inbox_endpoint, status=value) }}" class="notification-tab{% if status == value %} is-active{% endif %}"{% if status == value %} aria-current="page"{% endif %}>{{ label }}{% if value == 'unread' %}<span class="badge badge-neutral">{{ notification_count }}</span>{% endif %}</a>
+  {% endfor %}
+</nav>
+<p class="field-hint mb-24">Membaca notifikasi tidak menghilangkan peringatan yang masih berlaku. Tindak lanjuti melalui detail perusahaan atau hubungi pihak GajiKu.</p>
+<section class="notification-list" aria-label="Daftar notifikasi">
+  {% for notification in notifications %}
+  <article class="card notification-item{% if not notification.read_at %} is-unread{% endif %}">
+    <div class="notification-item-icon">{{ icon('receipt' if notification.kind == 'mou' else 'building') }}</div>
+    <div class="notification-item-copy">
+      <div class="notification-item-meta"><time>{{ notification.created_at|notification_time }}</time><span class="badge {{ 'badge-neutral' if notification.read_at else 'badge-blue' }}">{{ 'Sudah dibaca' if notification.read_at else 'Belum dibaca' }}</span>{% if notification.resolved_at %}<span class="badge badge-success">Ditindaklanjuti</span>{% endif %}</div>
+      <h2>{{ notification.title }}</h2><p>{{ notification.message }}</p>
+      <div class="lifecycle-actions">
+        <form method="post" action="{{ url_for('notifications.read_one', notification_id=notification.id) }}">{{ csrf() }}<input type="hidden" name="open" value="1"><button type="submit" class="button button-secondary button-small">{{ 'Buka perusahaan' if superuser else 'Buka dashboard' }} {{ icon('arrow-right') }}</button></form>
+        {% if not notification.read_at %}
+        <form method="post" action="{{ url_for('notifications.read_one', notification_id=notification.id) }}">{{ csrf() }}<input type="hidden" name="status" value="{{ status }}"><button type="submit" class="button button-ghost button-small">Tandai dibaca</button></form>
+        {% endif %}
+      </div>
+    </div>
+  </article>
+  {% else %}{{ empty_state('Tidak ada notifikasi pada filter ini', 'Pilih tab lain untuk melihat riwayat yang tersimpan.', 'bell') }}{% endfor %}
+</section>
+<nav class="notification-pagination" aria-label="Halaman notifikasi">
+  <span>{{ total }} notifikasi &middot; Halaman {{ page }} dari {{ pages }}</span>
+  <div class="lifecycle-actions">{% if page > 1 %}<a class="button button-secondary button-small" href="{{ url_for(inbox_endpoint, status=status, page=page-1) }}">Sebelumnya</a>{% endif %}{% if page < pages %}<a class="button button-secondary button-small" href="{{ url_for(inbox_endpoint, status=status, page=page+1) }}">Berikutnya</a>{% endif %}</div>
+</nav>
+{% endblock %}

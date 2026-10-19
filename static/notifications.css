@@ -1,0 +1,170 @@
+.notification-bell {
+  position: relative;
+  flex-shrink: 0;
+}
+.notification-count {
+  position: absolute;
+  top: -4px;
+  right: -6px;
+  min-width: 19px;
+  padding: 2px 5px;
+  border: 2px solid var(--surface);
+  border-radius: 20px;
+  background: #b42332;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.25;
+  text-align: center;
+}
+.notification-count[hidden], .company-alerts[hidden] {
+  display: none;
+}
+.company-alerts {
+  display: grid;
+  gap: 10px;
+}
+.company-alert {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 22px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--ink);
+  line-height: 1.65;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.company-alert span {
+  flex: 1;
+}
+.company-alert .icon {
+  flex-shrink: 0;
+}
+.company-alert-danger {
+  background: linear-gradient(110deg, #a82031, #852238);
+  border-color: #a82031;
+  color: #fff;
+}
+.company-alert-warning {
+  background: var(--soft-amber);
+  color: var(--amber);
+}
+.lifecycle-actions, .billing-schedule, .notification-tabs, .notification-pagination {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.billing-schedule {
+  align-items: flex-end;
+  margin-bottom: 14px;
+}
+#penagihan > .card-header, #mou-actions > .card-header {
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+#penagihan > .card-header > div, #mou-actions > .card-header > div {
+  flex: 1;
+  min-width: min(100%, 250px);
+}
+.billing-schedule .field {
+  min-width: min(100%, 240px);
+}
+.notification-tabs {
+  margin-bottom: 16px;
+  padding: 7px;
+  width: fit-content;
+  max-width: 100%;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+}
+.notification-tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: 9px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+}
+.notification-tab.is-active {
+  background: var(--soft-blue);
+  color: var(--primary);
+}
+.notification-list {
+  display: grid;
+  gap: 14px;
+}
+.notification-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 18px;
+  padding: 24px;
+}
+.notification-item.is-unread {
+  border-inline-start: 4px solid var(--primary);
+}
+.notification-item-icon {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  flex-shrink: 0;
+  border-radius: 12px;
+  color: var(--primary);
+  background: var(--soft-blue);
+}
+.notification-item-copy {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.notification-item-copy h2 {
+  margin: 12px 0 8px;
+  font-size: 16px;
+}
+.notification-item-copy p {
+  margin-bottom: 16px;
+  color: var(--muted);
+  line-height: 1.75;
+}
+.notification-item-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.notification-pagination {
+  justify-content: space-between;
+  padding-top: 24px;
+  color: var(--muted);
+  font-size: 13px;
+}
+#penagihan, #mou-actions {
+  scroll-margin-top: 100px;
+}
+@media (max-width: 600px) {
+  .notification-item {
+    gap: 12px;
+    padding: 18px 14px;
+  }
+  .notification-item-icon {
+    width: 32px;
+    height: 32px;
+  }
+  .notification-tab {
+    padding: 9px;
+    font-size: 12px;
+  }
+  .company-alert {
+    padding: 14px;
+    font-size: 13px;
+  }
+}

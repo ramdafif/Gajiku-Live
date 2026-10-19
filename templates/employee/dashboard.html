@@ -6,7 +6,7 @@
 <span class="period-chip">{{ icon('calendar') }}{{ mk|format_period_label }}</span>
 {% endcall %}
 {% if session.get('formal_active') != 1 %}
-<div class="notice notice-warning">{{ icon('info') }}<span>Akun belum aktif. Hubungi admin perusahaan untuk aktivasi sebelum mengajukan tarik gaji.</span>
+<div class="notice notice-warning">{{ icon('info') }}<span>{{ 'Perusahaan Anda masih nonaktif karena administrasi penagihan. Pengajuan baru terkunci; silakan hubungi admin perusahaan atau pihak GajiKu.' if company_billing_blocked else 'Akun belum aktif. Hubungi admin perusahaan untuk aktivasi sebelum mengajukan tarik gaji.' }}</span>
 </div>
 {% endif %}
 <div class="dashboard-grid mb-24">
@@ -61,7 +61,7 @@
           <dd>
             <span class="badge {{ 'badge-success' if session.get('formal_active') == 1 else 'badge-warning' }}">
               <span class="status-dot">
-              </span>{{ 'Aktif' if session.get('formal_active') == 1 else 'Menunggu aktivasi' }}</span>
+              </span>{{ 'Nonaktif karena tagihan' if company_billing_blocked else 'Aktif' if session.get('formal_active') == 1 else 'Menunggu aktivasi' }}</span>
           </dd>
         </div>
       </dl>

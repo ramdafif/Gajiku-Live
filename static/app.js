@@ -405,7 +405,7 @@
           y1: vertical,
           x2: chartWidth - 10,
           y2: vertical,
-          stroke: "#e9eff4",
+          stroke: "var(--chart-grid)",
           "stroke-dasharray": "3 5",
         }),
       );
@@ -416,7 +416,7 @@
             x: paddingLeft - 10,
             y: vertical + 3,
             "text-anchor": "end",
-            fill: "#9baab5",
+            fill: "var(--chart-label)",
             "font-size": 9,
             "font-family": "inherit",
           },
@@ -436,7 +436,7 @@
         width,
         height,
         rx: 4,
-        fill: index === values.length - 1 ? "#0879b3" : "#9fd5f2",
+        fill: index === values.length - 1 ? "var(--primary)" : "var(--chart-bar)",
       });
       bar.append(
         makeSvg("title", {}, `${data.labels[index]}: ${rupiah.format(value)}`),
@@ -454,7 +454,7 @@
               x: paddingLeft + index * slotWidth + slotWidth / 2,
               y: chartHeight - 8,
               "text-anchor": "middle",
-              fill: "#9baab5",
+              fill: "var(--chart-label)",
               "font-size": 9,
               "font-family": "inherit",
             },

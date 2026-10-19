@@ -97,9 +97,9 @@
             {% endif %}
           </td>
           <td>
-            <span class="badge {{ 'badge-success' if row.status_aktif == 1 else 'badge-neutral' }}">
+            <span class="badge {{ 'badge-danger' if row.billing_blocked else 'badge-success' if row.status_aktif == 1 else 'badge-neutral' }}">
               <span class="status-dot">
-              </span>{{ 'Aktif' if row.status_aktif == 1 else 'Tidak aktif' }}</span>
+              </span>{{ 'Nonaktif karena tagihan' if row.billing_blocked else 'Aktif' if row.status_aktif == 1 else 'Tidak aktif' }}</span>
           </td>
           {% if superuser %}
           <td>{{ row.admin_fee_flat|rupiah }}</td>

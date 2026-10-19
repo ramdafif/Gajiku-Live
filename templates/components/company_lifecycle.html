@@ -1,0 +1,74 @@
+<section class="card mb-24" id="mou-actions" aria-labelledby="mou-action-title">
+  <div class="card-header">
+    <div><h2 id="mou-action-title">Tindak lanjut MoU</h2><p>Pengingat berlaku mulai 30 hari sebelum akhir periode.</p></div>
+    {% if mou_acknowledged %}<span class="badge badge-neutral">Pengingat periode ini dihentikan</span>{% endif %}
+  </div>
+  <div class="card-body lifecycle-actions">
+    {% if client.mou_end %}
+    <button type="button" class="button button-primary" data-dialog="mou-renew">{{ icon('calendar') }} Telah memperpanjang kontrak</button>
+    {% if not mou_acknowledged and mou_status in ['soon', 'ended'] %}
+    <form method="post" action="{{ url_for('notifications.ignore_mou', client_id=client.id) }}" data-confirm="Hentikan pengingat MoU periode ini untuk seluruh superadmin? Riwayat tetap tersimpan.">
+      {{ csrf() }}<input type="hidden" name="period_key" value="{{ mou_period_key }}">
+      <button type="submit" class="button button-secondary">Abaikan periode ini</button>
+    </form>
+    {% endif %}
+    {% else %}<p class="text-muted">Isi periode MoU melalui Edit perusahaan untuk mengaktifkan pengingat.</p>{% endif %}
+  </div>
+</section>
+<section class="card mb-24" id="penagihan" aria-labelledby="billing-title">
+  <div class="card-header">
+    <div><h2 id="billing-title">Penagihan &amp; akses karyawan</h2><p>Satu aktivasi perusahaan membuka akses seluruh karyawan yang terblokir karena tagihan.</p></div>
+    <span class="badge {{ 'badge-danger' if billing.blocked else 'badge-success' if billing.configured else 'badge-neutral' }}">{{ 'Nonaktif karena tagihan' if billing.blocked else 'Aktif' if billing.configured else 'Belum diatur' }}</span>
+  </div>
+  <div class="card-body">
+    <form class="billing-schedule" method="post" action="{{ url_for('notifications.configure_billing', client_id=client.id) }}" data-confirm="Simpan jadwal penagihan? Jatuh tempo yang sudah tercatat tidak berubah.">
+      {{ csrf() }}
+      <div class="field"><label for="billing-day">Tanggal jatuh tempo bulanan</label>
+        <input type="number" id="billing-day" name="due_day" min="1" max="31" required value="{{ billing.setting.due_day if billing.configured else '' }}" placeholder="Contoh: 10">
+      </div>
+      <button class="button button-secondary" type="submit">Simpan jadwal</button>
+    </form>
+    <p class="field-hint">Semua waktu WIB. Tanggal 29-31 mengikuti hari terakhir bulan jika diperlukan. Jadwal pertama tidak menagih mundur. Perubahan jadwal berlaku setelah jatuh tempo terakhir yang sudah tercatat.</p>
+    <p class="field-hint">Tagihan untuk bulan sebelumnya. Jika jatuh tempo tanggal 10, peringatan muncul tanggal 7-10 dan pengajuan baru terkunci tanggal 11 pukul 00.00 WIB jika belum lunas.</p>
+    {% if billing.blocked %}
+    <div class="notice notice-warning mt-24"><span>Setelah seluruh tunggakan lunas, klik Aktifkan Kembali satu kali. Karyawan otomatis bisa mengajukan lagi; yang nonaktif secara pribadi tetap nonaktif. Pengajuan lama tetap dapat diproses.</span></div>
+    <form method="post" action="{{ url_for('notifications.activate', client_id=client.id) }}" class="mt-24" data-confirm="Aktifkan kembali akses seluruh karyawan yang terblokir karena tagihan perusahaan ini?">
+      {{ csrf() }}<button type="submit" class="button button-primary"{% if billing.overdue %} disabled{% endif %}>{{ icon('shield') }} Aktifkan Kembali</button>
+      {% if billing.overdue %}<p class="field-hint">Masih ada {{ billing.overdue|length }} tagihan jatuh tempo yang belum lunas.</p>{% endif %}
+    </form>
+    {% endif %}
+  </div>
+  {% if billing.bills %}
+  <div class="table-scroll" tabindex="0" role="region" aria-label="Riwayat tagihan perusahaan">
+    <table class="data-table" data-paginate="10">
+      <thead><tr><th>Periode tagihan</th><th>Jatuh tempo</th><th>Status pembayaran</th><th>Pencatatan lunas</th><th>Tindakan</th></tr></thead>
+      <tbody>{% for bill in billing.bills|reverse %}
+        <tr>
+          <td>{{ bill.period|format_period_label }}</td><td>{{ bill.due_on|indo_date }}</td>
+          <td><span class="badge {{ 'badge-success' if bill.paid_at else 'badge-warning' }}">{{ 'Lunas' if bill.paid_at else 'Belum lunas' }}</span></td>
+          <td>{% if bill.paid_at %}{{ bill.paid_at|notification_time }}<small>{{ bill.paid_by }}</small>{% else %}-{% endif %}</td>
+          <td>{% if not bill.paid_at and bill.id %}
+            <form method="post" action="{{ url_for('notifications.mark_paid', client_id=client.id, bill_id=bill.id) }}" data-confirm="Konfirmasi pembayaran periode {{ bill.period }} sudah diterima? Pencatatan ini tidak otomatis mengaktifkan perusahaan yang diblokir.">
+              {{ csrf() }}<button type="submit" class="button button-secondary button-small">Tandai Lunas</button>
+            </form>{% else %}<span class="text-muted">{{ 'Tercatat' if bill.paid_at else 'Menunggu sinkronisasi' }}</span>{% endif %}
+          </td>
+        </tr>
+      {% endfor %}</tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+{% if client.mou_end %}
+<dialog id="mou-renew" class="dialog" aria-labelledby="mou-renew-title">
+  <div class="dialog-header"><h2 id="mou-renew-title">Catat perpanjangan MoU</h2><button type="button" class="icon-button" data-close-dialog aria-label="Tutup">{{ icon('close') }}</button></div>
+  <form method="post" action="{{ url_for('notifications.renew_mou', client_id=client.id) }}" data-mou-range data-confirm="Simpan periode baru dan hentikan pengingat MoU sebelumnya?">
+    {{ csrf() }}<input type="hidden" name="period_key" value="{{ mou_period_key }}">
+    <div class="form-grid">
+      <div class="field field-full"><label for="renew-number">Nomor MoU</label><input id="renew-number" name="mou_number" maxlength="255" value="{{ client.mou_number or '' }}"></div>
+      <div class="field"><label for="renew-start">Mulai periode baru</label><input type="date" id="renew-start" name="mou_start" required></div>
+      <div class="field"><label for="renew-end">Akhir periode baru</label><input type="date" id="renew-end" name="mou_end" required></div>
+    </div>
+    <div class="dialog-actions"><button type="button" class="button button-secondary" data-close-dialog>Batal</button><button type="submit" class="button button-primary">Simpan perpanjangan</button></div>
+  </form>
+</dialog>
+{% endif %}

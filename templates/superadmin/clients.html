@@ -54,6 +54,7 @@
               <span class="company-avatar">{{ icon('building') }}</span>
               <span>
                 <strong>{{ client.name }}</strong>
+                {% if client.billing_blocked %}<span class="badge badge-danger">Nonaktif karena tagihan</span>{% endif %}
                 <small>{{ client.email or 'Email belum tercatat' }}</small>
                 <small>{{ client.phone or '-' }}</small>
               </span>
@@ -81,6 +82,7 @@
           <td>
             <span class="badge {{ 'badge-success' if client.mou_status == 'valid' else 'badge-danger' if client.mou_status == 'ended' else 'badge-warning' if client.mou_status == 'soon' else 'badge-neutral' }}">{{ client.mou_label }}</span>
             <small>{{ client.mou_end|indo_date if client.mou_end else 'Tanggal belum diisi' }}</small>
+            <small>Nomor: {{ client.mou_number or '-' }}</small>
           </td>
           <td class="text-right">
             <a href="{{ url_for('clients.superadmin_client_detail', client_id=client.id) }}" class="button button-secondary button-small">Lihat detail {{ icon('arrow-up-right') }}</a>

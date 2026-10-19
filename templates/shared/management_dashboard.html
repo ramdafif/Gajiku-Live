@@ -2,6 +2,7 @@
 {% from 'components/macros.html' import icon, csrf, metric, page_heading, status_badge, product_badge, empty_state with context %}
 {% block title %}Dashboard {{ 'Superadmin' if superuser else 'Admin' }}{% endblock %}
 {% block content %}
+{% include 'components/company_alerts.html' %}
 {% if superuser %}
 {% set approval_rows = (pending_transfer|default([], true)) + (pending_reg|default([], true)) + (pending_urg|default([], true)) %}
 {% set approval_count = approval_rows|selectattr('can_final')|list|length %}
@@ -58,7 +59,7 @@
   </form>
   {% endif %}
 </div>
-<div class="metric-grid">{{ metric('Total Pegawai (master)', total_pegawai|default(0), 'Master pegawai terdaftar', 'users', 'accent-blue') }}{{ metric('Akun teregistrasi', total_register|default(0), (not_registered|default(0)) ~ ' belum mendaftar', 'user') }}{{ metric('Akun aktif', reg_aktif|default(0), (inactive_count|default(0)) ~ ' pegawai tidak aktif', 'shield', 'accent-green') }}{{ metric('Biaya admin periode', (admin_fee_total|default(total_admin|default(0)))|rupiah, 'Dari pengajuan yang selesai', 'receipt', 'accent-amber') }}</div>
+<div class="metric-grid">{{ metric('Total Pegawai (master)', total_pegawai|default(0), 'Master pegawai terdaftar', 'users', 'accent-blue') }}{{ metric('Akun teregistrasi', total_register|default(0), (not_registered|default(0)) ~ ' belum mendaftar', 'user') }}{{ metric('Akun aktif pribadi', reg_aktif|default(0), (inactive_count|default(0)) ~ ' nonaktif pribadi; blokir perusahaan terpisah', 'shield', 'accent-green') }}{{ metric('Biaya admin periode', (admin_fee_total|default(total_admin|default(0)))|rupiah, 'Dari pengajuan yang selesai', 'receipt', 'accent-amber') }}</div>
 <div class="chart-grid mb-24">
   <section class="card">
     <div class="card-header">
@@ -188,18 +189,18 @@
   <div class="card-header">
     <div>
       <h2>Rekap biaya admin</h2>
-      <p>Pengajuan selesai &middot; {{ admin_fee_recap_label|default('Semua periode') }}</p>
+      <p>Pengajuan selesai &middot; {{ admin_fee_recap_label|default(filter_current_month|format_period_label) }}</p>
     </div>
     <form method="get" class="inline wrap compact-filter">
       <div class="field">
         <label for="admin_fee_month" class="sr-only">Bulan rekap biaya</label>
-        <input type="month" name="admin_fee_month" id="admin_fee_month" value="{{ admin_fee_month|default('') }}">
+        <input type="month" name="admin_fee_month" id="admin_fee_month" value="{{ admin_fee_month|default(filter_current_month) }}" required>
       </div>
       {% if company_selected|default('') %}
       <input type="hidden" name="company" value="{{ company_selected }}">
       {% endif %}
       <button class="button button-secondary button-small" type="submit">Filter</button>
-      <a class="button button-ghost button-small" href="{{ url_for(home_endpoint) }}">Semua</a>
+      <a class="button button-ghost button-small" href="{{ url_for(home_endpoint) }}">Bulan ini</a>
     </form>
   </div>
   <div class="table-scroll" tabindex="0" role="region" aria-label="Rekap biaya admin">

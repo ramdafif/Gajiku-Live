@@ -1,0 +1,5 @@
+<section class="company-alerts mb-24" data-company-alerts aria-label="Peringatan perusahaan" aria-live="polite"{% if not company_alerts %} hidden{% endif %}>
+  {% for alert in company_alerts %}
+  <a class="company-alert company-alert-{{ alert.kind }}" href="{{ alert.url }}">{{ icon('info') }}<span>{{ alert.message }}</span>{{ icon('arrow-right') }}</a>
+  {% endfor %}
+</section>

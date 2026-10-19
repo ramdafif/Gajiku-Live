@@ -12,17 +12,22 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-    <meta name="theme-color" content="#f6f8fb">
+    <meta name="color-scheme" content="light dark">
+    <meta name="theme-color" content="#f6f8fb" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#17212b" media="(prefers-color-scheme: dark)">
     <meta name="csrf-token" content="{{ csrf_token() }}">
     <meta name="description" content="Gajiku. Akses gajimu, setiap waktu. Kelola pengajuan dan aktivitas gaji dalam satu tempat.">
     <title>
       {% block title %}Beranda{% endblock %} - Gajiku</title>
     <link rel="icon" href="{{ url_for('static', filename='img/logo_gjku.ico') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=20261017-scrollbars-overlay">
-    <link rel="stylesheet" href="{{ url_for('static', filename='pages.css') }}?v=20261017-auth-layout">
-    <link rel="stylesheet" href="{{ url_for('static', filename='responsive.css') }}?v=20261017-auth-layout">
+    <script src="{{ url_for('static', filename='theme.js') }}?v=20261019-theme"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=20261019-theme">
+    <link rel="stylesheet" href="{{ url_for('static', filename='pages.css') }}?v=20261019-theme">
+    <link rel="stylesheet" href="{{ url_for('static', filename='responsive.css') }}?v=20261019-theme">
     <script src="{{ url_for('static', filename='scrollbars.js') }}?v=20261017-scrollbars-overlay" defer></script>
-    <script src="{{ url_for('static', filename='app.js') }}?v=20261017" defer></script>
+    <script src="{{ url_for('static', filename='app.js') }}?v=20261019-theme" defer></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='notifications.css') }}?v=20261019">
+    <script src="{{ url_for('static', filename='notifications.js') }}?v=20261019" defer></script>
     {% block head_extra %}{% endblock %}
   </head>
   <body class="{% block body_class %}app-body{% endblock %}">
@@ -89,7 +94,10 @@
             <span class="topbar-date">{{ icon('calendar') }}<time data-local-date>
               </time>
             </span>
-            <button type="button" class="icon-button help-button" data-dialog="help-dialog" aria-label="Bantuan">{{ icon('help') }}</button>
+            <button type="button" class="icon-button theme-toggle" data-theme-toggle aria-label="Aktifkan mode gelap" aria-pressed="false" hidden>{{ icon('moon', 'theme-icon-moon') }}{{ icon('sun', 'theme-icon-sun') }}</button>
+            {% if staff %}
+            <a class="icon-button notification-bell" data-notification-bell data-summary-url="{{ url_for('notifications.summary') }}" href="{{ url_for('notifications.superadmin_inbox' if superuser else 'notifications.admin_inbox') }}" aria-label="Notifikasi, {{ notification_count }} belum dibaca">{{ icon('bell') }}<span class="notification-count" data-notification-count{% if not notification_count %} hidden{% endif %}>{{ notification_count if notification_count < 100 else '99+' }}</span></a>
+            {% endif %}
             <a class="profile-link" href="{{ url_for(settings_endpoint) }}">{{ avatar(display_name, avatar_url|default('')) }}<span class="profile-copy">
                 <strong>{{ display_name }}</strong>
                 <small>{{ role_label }}</small>

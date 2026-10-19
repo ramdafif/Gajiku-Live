@@ -1,10 +1,11 @@
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime
 import sqlite3
 
 from flask import Blueprint, abort, flash, redirect, render_template, request, session, url_for
 
 from app.db import get_db
 from app.services.client_service import PROJECT_NAMES, client_by_name, list_clients, list_projects, name_key, project_in_use
+from app.services.company_lifecycle import billing_state, local_now, mou_period
 
 
 bp = Blueprint("clients", __name__)
@@ -55,7 +56,7 @@ def admin_client():
 
 
 def mou_status(client):
-    today = datetime.now(timezone(timedelta(hours=7))).date()
+    today = local_now().date()
     end = date.fromisoformat(str(client["mou_end"])) if client["mou_end"] else None
     start = date.fromisoformat(str(client["mou_start"])) if client["mou_start"] else None
     if end and end < today:
@@ -138,7 +139,8 @@ def superadmin_clients():
         client["project_count"] = db.execute("SELECT COUNT(*) AS total FROM client_projects WHERE client_id=?", (client["id"],)).fetchone()["total"]
         client["employee_count"] = db.execute("SELECT COUNT(*) AS total FROM pegawai WHERE LOWER(TRIM(perusahaan_induk))=?", (client["name_key"],)).fetchone()["total"]
         client["mou_status"], client["mou_label"] = mou_status(client)
-        haystack = " ".join([client["name"], client["pic_name"] or "", client["email"] or ""] + [admin["email"] for admin in client["admins"]]).lower()
+        client["billing_blocked"] = billing_state(db, client["id"])["blocked"]
+        haystack = " ".join([client["name"], client["mou_number"] or "", client["pic_name"] or "", client["email"] or ""] + [admin["email"] for admin in client["admins"]]).lower()
         if (not query or query in haystack) and (not status or status == client["mou_status"]):
             clients.append(client)
     return render_template("superadmin_clients.html", clients=clients, q=query, mou_filter=status)
@@ -162,7 +164,10 @@ def superadmin_client_detail(client_id):
     status, label = mou_status(client)
     return render_template("client_detail.html", client=client, projects=list_projects(db, client_id),
                            admins=client_admins(db, client), mou_label=label, mou_status=status,
-                           is_superadmin=True)
+                           is_superadmin=True, billing=billing_state(db, client_id),
+                           mou_period_key=mou_period(client),
+                           mou_acknowledged=bool(db.execute("SELECT 1 FROM client_mou_actions WHERE client_id=? AND period_key=?",
+                                                          (client_id, mou_period(client))).fetchone()))
 
 
 def project_change(client, project_id=None, delete=False):

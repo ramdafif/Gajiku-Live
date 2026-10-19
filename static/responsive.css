@@ -250,7 +250,7 @@
   .sidebar-backdrop {
     position: fixed;
     inset: 0;
-    background: #153b565e;
+    background: var(--nav-backdrop, #153b565e);
     backdrop-filter: blur(3px);
     border: 0;
     z-index: 55;
@@ -320,7 +320,7 @@
     right: 0;
     height: calc(66px + env(safe-area-inset-bottom));
     padding: 7px 12px calc(7px + env(safe-area-inset-bottom));
-    background: #ffffffed;
+    background: var(--surface-translucent, #ffffffed);
     backdrop-filter: blur(15px);
     border-top: 1px solid var(--line);
     z-index: 45;
@@ -342,7 +342,7 @@
   }
   .bottom-nav a.is-active {
     color: var(--primary);
-    background: #eff8fd;
+    background: var(--surface-blue, #eff8fd);
   }
   .dashboard-grid {
     grid-template-columns: minmax(0, 1.65fr) minmax(240px, 1fr);
@@ -593,7 +593,7 @@
   .overview-side {
     width: 100%;
     padding-top: 15px;
-    border-top: 1px solid #ffffff1c;
+    border-top: 1px solid var(--panel-line);
     justify-content: flex-start;
     gap: 30px;
   }
@@ -691,7 +691,7 @@
     min-height: 0;
     padding: 27px 28px 25px;
     border-right: 0;
-    border-bottom: 1px solid #e4f0f8;
+    border-bottom: 1px solid var(--line-blue, #e4f0f8);
   }
   .auth-story-content {
     padding: 28px 0 0;
@@ -827,9 +827,9 @@
   .topbar-end {
     gap: 8px;
   }
-  .topbar .help-button {
-    width: 29px;
-    height: 29px;
+  .topbar .theme-toggle {
+    width: 40px;
+    height: 40px;
   }
   .profile-link {
     padding-left: 9px;
@@ -1123,7 +1123,7 @@
     max-width: 100%;
   }
   .app-body {
-    background: #fff;
+    background: var(--surface);
   }
   .card,
   .metric {

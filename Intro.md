@@ -130,7 +130,7 @@ Bypass, Windu, dan formula finansial adalah keputusan bisnis yang memerlukan per
 
 ## 8. Frontend, Impor, dan Ekspor
 
-UI Jinja memakai base template, CSS/JS bersama, serta CSS/JS khusus halaman. Tema `legacy`/`new` disimpan pada localStorage `gajiku-theme`. Invoice adalah preview browser; server tetap sumber validasi. Dashboard polling status sekitar 5 detik dan menampilkan countdown lokal.
+UI Jinja memakai base template serta CSS/JS bersama. Tema warna mengikuti `prefers-color-scheme` device/browser selama user belum memilih sendiri. Toggle bulan/matahari di navbar menyimpan pilihan `light`/`dark` pada localStorage `gajiku-color-scheme`, berlaku di semua halaman dan tersinkron antar-tab pada browser yang sama. `static/theme.js` dimuat sebelum stylesheet untuk menerapkan tema sebelum halaman tampil. Jika storage tidak tersedia, pilihan manual tetap berlaku selama halaman terbuka; tanpa JavaScript, CSS mengikuti preferensi device. Tema tidak mengubah data akun/backend. Pusat bantuan tetap di sidebar. Invoice adalah preview browser; server tetap sumber validasi. Dashboard polling status sekitar 5 detik dan menampilkan countdown lokal.
 
 Impor openpyxl hanya `.xlsx`, maksimal **5 MB / 500 baris data**; ada validasi duplikat ID/email dan scope perusahaan/project. **Partial success:** baris valid disimpan walau lainnya error. Fee Excel hanya dihormati untuk superadmin; admin biasa memakai default. Siklus impor default B, berbeda dari bootstrap yang default A.
 

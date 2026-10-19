@@ -338,6 +338,35 @@ def add_months(d: date, delta: int) -> date:
     m = (d.month - 1 + delta) % 12 + 1
     return date(y, m, 1)
 
+def month_filter_bounds(day=None):
+    day = day or business_today()
+    return day.replace(day=1), day.replace(day=calendar.monthrange(day.year, day.month)[1])
+
+def normalize_month_filter(raw, today=None):
+    value = (raw or "").strip()
+    if re.fullmatch(r"\d{4}-\d{2}", value):
+        try:
+            return date.fromisoformat(value + "-01").strftime("%Y-%m")
+        except ValueError:
+            pass
+    return (today or business_today()).strftime("%Y-%m")
+
+def history_date_range():
+    default_start, default_end = month_filter_bounds()
+    try:
+        start = datetime.strptime((request.args.get("start") or "").strip() or default_start.isoformat(), "%Y-%m-%d").date()
+        end = datetime.strptime((request.args.get("end") or "").strip() or default_end.isoformat(), "%Y-%m-%d").date()
+    except ValueError:
+        flash("Tanggal filter tidak valid. Gunakan format YYYY-MM-DD.", "error")
+        return default_start, default_end
+    return (end, start) if start > end else (start, end)
+
+@bp.app_context_processor
+def period_filter_defaults():
+    start, end = month_filter_bounds()
+    return {"filter_current_month": start.strftime("%Y-%m"),
+            "filter_current_start": start.isoformat(), "filter_current_end": end.isoformat()}
+
 def format_short_date(d: date) -> str:
     months = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
     return f"{d.day} {months[d.month - 1]} {d.year}"
@@ -541,13 +570,16 @@ def get_formal_status():
         return None
     db = get_db()
     row = db.execute("""
-        SELECT CASE WHEN ua.status_aktif=1 AND p.status_aktif=1 THEN 1 ELSE 0 END AS aktif
+        SELECT CASE WHEN ua.status_aktif=1 AND p.status_aktif=1 THEN 1 ELSE 0 END AS aktif, p.perusahaan_induk
         FROM user_accounts ua
         JOIN pegawai p ON p.id = ua.pegawai_id
         WHERE ua.email = ?
         LIMIT 1
     """, (email,)).fetchone()
-    return int(row["aktif"]) if row else None
+    if not row:
+        return None
+    from app.services.company_lifecycle import company_blocked
+    return int(row["aktif"]) if not company_blocked(db, row["perusahaan_induk"]) else 0
 
 def password_ok(pw: str) -> bool:
     return isinstance(pw, str) and 6 <= len(pw) <= 256
@@ -1228,6 +1260,9 @@ def dashboard():
         account_company = ""
 
     enabled_products = get_products_for_company(account_company)
+    from app.services.company_lifecycle import company_blocked
+    company_billing_blocked = company_blocked(db, account_company)
+    session["formal_active"] = get_formal_status() or 0
     avatar_url = None
     try:
         email = (session.get("formal_email") or user["email"] or "").strip().lower()
@@ -1252,6 +1287,7 @@ def dashboard():
         total_admin=total_admin,
         account_name=account_name,
         account_company=account_company,
+        company_billing_blocked=company_billing_blocked,
         remaining_map=remaining_map,
         sisa_plafon_urg=sisa_plafon_urg,
         enabled_products=enabled_products,
@@ -1380,7 +1416,10 @@ def tarik_gaji():
     fresh_active = get_formal_status()
     if fresh_active != 1:
         session["formal_active"] = 0
-        flash("Akun Anda belum diaktifkan admin. Pengajuan tarik gaji terkunci.", "error")
+        from app.services.company_lifecycle import company_blocked
+        message = ("Perusahaan Anda masih nonaktif karena administrasi penagihan. Hubungi admin atau pihak GajiKu."
+                   if company_blocked(db, pegawai_company) else "Akun Anda belum diaktifkan admin. Pengajuan tarik gaji terkunci.")
+        flash(message, "error")
         return redirect(url_for("web.dashboard", tanggal=at_date.isoformat()))
     elif fresh_active == 1:
         session["formal_active"] = 1
@@ -1490,6 +1529,10 @@ def tarik_gaji():
         if not user_check:
             flash("Data pengguna tidak ditemukan di sistem. Silakan logout dan login kembali.", "error")
             return redirect(url_for("web.dashboard", tanggal=at_date.isoformat()))
+
+        if get_formal_status() != 1:
+            flash("Akses pengajuan berubah atau perusahaan melewati batas pembayaran. Pengajuan tidak dibuat.", "error")
+            return redirect(url_for("web.dashboard"))
 
         # --- Simpan transaksi on-proses ---
         db.execute("""
@@ -1644,47 +1687,46 @@ def riwayat_view():
         flash("Sesi tidak valid. Silakan login lagi.", "error")
         return redirect(url_for("web.login"))
 
-    at_date = current_sim_date()
+    at_date = business_today()
     limits_u = compute_limits(int(user["gaji"] or 0), at_date, user["id"])
     weekly_cutoff = limits_u.get("cutoff_hari") if limits_u.get("cutoff_mingguan") else None
-    requested_periode = request.args.get("periode")
+    requested_periode = (request.args.get("periode") or "").strip()
+    selected_periode = normalize_month_filter(requested_periode, at_date)
+    base_date = date.fromisoformat(selected_periode + "-01")
+    monthly_periods = [month_key(add_months(at_date.replace(day=1), -offset)) for offset in range(6)]
+    if selected_periode not in monthly_periods:
+        monthly_periods.append(selected_periode)
+    periode_options = [{"value": period, "label": format_period_label(period)} for period in monthly_periods]
+    periods_for_query = None
     if weekly_cutoff is not None:
         current_start = weekly_period_start(at_date, weekly_cutoff)
-        weekly_periods = ["W:" + (current_start - timedelta(days=7 * i)).isoformat() for i in range(6)]
+        weekly_periods = ["W:" + (current_start - timedelta(days=7 * offset)).isoformat() for offset in range(6)]
         last_periods = weekly_periods
-        periode_options = [{"value": "last-6", "label": "6 Periode Mingguan Terakhir"}]
-        periode_options += [{"value": p, "label": format_period_label(p)} for p in weekly_periods]
-        if not requested_periode or requested_periode == "last-6":
+        periode_options += [{"value": "last-6", "label": "6 Periode Mingguan Terakhir"}]
+        periode_options += [{"value": period, "label": format_period_label(period)} for period in weekly_periods]
+        if requested_periode == "last-6":
             selected_periode = "last-6"
             periods_for_query = weekly_periods
+            base_date = current_start
         elif requested_periode in weekly_periods:
             selected_periode = requested_periode
             periods_for_query = [requested_periode]
-        else:
-            selected_periode = "last-6"
-            periods_for_query = weekly_periods
-        base_date = current_start
-        mk = weekly_periods[0]
+            base_date = date.fromisoformat(requested_periode[2:])
     else:
-        if not requested_periode or requested_periode == "last-6":
-            mk = at_date.strftime("%Y-%m")
+        last_periods = [month_key(add_months(base_date, -offset)) for offset in range(6)]
+        periode_options += [{"value": "last-6", "label": "6 Periode Terakhir"}]
+        if requested_periode == "last-6":
             selected_periode = "last-6"
-        else:
-            mk = requested_periode
-            selected_periode = mk
-        try:
-            base_year, base_month = [int(x) for x in mk.split("-", 1)]
-            base_date = date(base_year, base_month, 1)
-        except Exception:
-            base_date = at_date.replace(day=1)
-            mk = base_date.strftime("%Y-%m")
-            selected_periode = "last-6"
-        last_periods = [month_key(add_months(base_date, -i)) for i in range(6)]
-        periode_options = [{"value": "last-6", "label": "6 Periode Terakhir"}]
-        periode_options += [{"value": p, "label": format_period_label(p)} for p in last_periods]
-        periods_for_query = last_periods if selected_periode == "last-6" else [mk]
+            periods_for_query = last_periods
 
-    placeholders = ",".join(["?"] * len(periods_for_query))
+    if periods_for_query is None:
+        start, end = month_filter_bounds(base_date)
+        period_clause = "t.tanggal >= ? AND t.tanggal <= ?"
+        period_params = [start.isoformat(), end.isoformat()]
+    else:
+        placeholders = ",".join(["?"] * len(periods_for_query))
+        period_clause = f"t.periode IN ({placeholders})"
+        period_params = periods_for_query
 
     rows = db.execute(
         f"""SELECT t.tanggal, t.periode, t.nominal, t.admin_fee, t.status, t.keterangan, t.product,
@@ -1693,9 +1735,9 @@ def riwayat_view():
              FROM transactions t
              JOIN users u ON u.id = t.user_id
              LEFT JOIN pegawai p ON LOWER(p.email)=LOWER(u.email)
-             WHERE t.user_id=? AND t.periode IN ({placeholders})
+             WHERE t.user_id=? AND {period_clause}
              ORDER BY t.periode DESC, t.tanggal DESC, t.id DESC""",
-        (user["id"], *periods_for_query),
+        (user["id"], *period_params),
     ).fetchall()
 
     total_nom   = sum(int(r["nominal"] or 0) for r in rows if r["status"] == "sukses")
@@ -1703,7 +1745,7 @@ def riwayat_view():
 
     # Penjelasan periode contoh berdasarkan siklus & periode yang dipilih
     a_start = base_date
-    a_end = (base_date + timedelta(days=6)) if weekly_cutoff is not None else date(base_date.year, base_date.month, calendar.monthrange(base_date.year, base_date.month)[1])
+    a_end = (base_date + timedelta(days=6)) if selected_periode.startswith("W:") else month_filter_bounds(base_date)[1]
     b_start = date(base_date.year, base_date.month, 16)
     b_end = date(add_months(base_date, 1).year, add_months(base_date, 1).month, 15)
 
@@ -1769,13 +1811,7 @@ def admin_dashboard():
     enabled_products = get_enabled_products()
     ppn_enabled = get_ppn_enabled()
     
-    admin_fee_month = (request.args.get("admin_fee_month") or "").strip()
-    if admin_fee_month:
-        try:
-            y, m = [int(x) for x in admin_fee_month.split("-", 1)]
-            date(y, m, 1)
-        except Exception:
-            admin_fee_month = ""
+    admin_fee_month = normalize_month_filter(request.args.get("admin_fee_month"))
     # =========================================================================
     # 🟢 KENDALI WAKTU MULTI-URUSAN (MURNI BERBASIS SIMULASI)
     # =========================================================================
@@ -2136,6 +2172,7 @@ def admin_dashboard():
         trend_labels=trend_labels,
         trend_values=trend_values,
         cohort_rows=cohort_rows,
+        admin_fee_month=admin_fee_month,
     )
 
 # =========================================================
@@ -2256,29 +2293,7 @@ def admin_riwayat():
     product = (request.args.get("product") or "").strip()
     f_company = (request.args.get("company") or "").strip()
     f_project = (request.args.get("project") or "").strip()
-    start_raw = (request.args.get("start") or "").strip()
-    end_raw = (request.args.get("end") or "").strip()
-
-    today = business_today()
-    default_start = add_months(date(today.year, today.month, 1), -5)
-    default_end = today
-
-    def parse_date(raw, fallback):
-        if not raw:
-            return fallback
-        try:
-            return datetime.strptime(raw, "%Y-%m-%d").date()
-        except Exception:
-            return None
-
-    start_dt = parse_date(start_raw, default_start)
-    end_dt = parse_date(end_raw, default_end)
-    if start_dt is None or end_dt is None:
-        flash("Tanggal filter tidak valid. Gunakan format YYYY-MM-DD.", "error")
-        start_dt, end_dt = default_start, default_end
-
-    if start_dt > end_dt:
-        start_dt, end_dt = end_dt, start_dt
+    start_dt, end_dt = history_date_range()
 
    # 1. Query Utama (Standar & Bersih)
     sql = f"""
@@ -2368,7 +2383,11 @@ def admin_export():
     if ret: return ret
 
     # Filter opsional
-    periode = (request.args.get("periode") or "").strip()   # "YYYY-MM" atau "" = semua
+    periode = (request.args.get("periode") or "").strip() or business_today().strftime("%Y-%m")
+    if periode == "all":
+        periode = ""
+    elif not periode.startswith("W:"):
+        periode = normalize_month_filter(periode)
     product = (request.args.get("product") or "").strip()   # "reg"/"urg"/""
     status  = (request.args.get("status") or "").strip()    # "sukses"/"on-proses"/"ditolak"/"dibatalkan"/""
 
@@ -2392,8 +2411,13 @@ def admin_export():
     scope, params = admin_employee_scope(db)
     sql += f" AND {scope}"
     if periode:
-        sql += " AND t.periode = ?"
-        params.append(periode)
+        if periode.startswith("W:"):
+            sql += " AND t.periode = ?"
+            params.append(periode)
+        else:
+            start, end = month_filter_bounds(date.fromisoformat(periode + "-01"))
+            sql += " AND t.tanggal >= ? AND t.tanggal <= ?"
+            params.extend([start.isoformat(), end.isoformat()])
     if product:
         sql += " AND t.product = ?"
         params.append(product)
@@ -2562,6 +2586,10 @@ def admin_pegawai():
         
     base_sql += " ORDER BY id DESC"
     rows = db.execute(base_sql, params).fetchall()
+    from app.services.company_lifecycle import billing_state
+    blocked_companies = {client["name_key"] for client in list_clients(db)
+                         if billing_state(db, client["id"])["blocked"]}
+    rows = [dict(row, billing_blocked=name_key(row["perusahaan_induk"]) in blocked_companies) for row in rows]
 
     # =========================================================================
     # 🗂️ LOGIK MENAMPILKAN ISI DROPDOWN FILTER SECARA OTOMATIS
@@ -3251,13 +3279,7 @@ def superadmin_dashboard():
     enabled_products = get_enabled_products()
     ppn_enabled = get_ppn_enabled()
     company_selected = (request.args.get("company") or "").strip()
-    admin_fee_month = (request.args.get("admin_fee_month") or "").strip()
-    if admin_fee_month:
-        try:
-            y, m = [int(x) for x in admin_fee_month.split("-", 1)]
-            date(y, m, 1)
-        except Exception:
-            admin_fee_month = ""
+    admin_fee_month = normalize_month_filter(request.args.get("admin_fee_month"))
 
     company_rows = db.execute("""
         SELECT DISTINCT LOWER(TRIM(perusahaan)) AS company
@@ -3510,11 +3532,9 @@ def superadmin_dashboard():
             ttl_seconds=10,
         )
 
-    fee_recap_where = "WHERE status IN ('sukses', 'on-proses')"
-    fee_recap_params = []
-    if admin_fee_month:
-        fee_recap_where += " AND periode = ?"
-        fee_recap_params.append(admin_fee_month)
+    fee_start, fee_end = month_filter_bounds(date.fromisoformat(admin_fee_month + "-01"))
+    fee_recap_where = "WHERE status IN ('sukses', 'on-proses') AND tanggal >= ? AND tanggal <= ?"
+    fee_recap_params = [fee_start.isoformat(), fee_end.isoformat()]
 
     admin_fee_recap_rows = db.execute(f"""
         SELECT
@@ -3532,7 +3552,7 @@ def superadmin_dashboard():
     """, fee_recap_params).fetchall()
     admin_fee_recap_total = sum(int(r["admin_fee_total"] or 0) for r in admin_fee_recap_rows)
     admin_fee_recap_count = sum(int(r["trx_count"] or 0) for r in admin_fee_recap_rows)
-    admin_fee_recap_label = format_period_label(admin_fee_month) if admin_fee_month else "All"
+    admin_fee_recap_label = format_period_label(admin_fee_month)
 
     # --- Transaksi terbaru bulan berjalan (pakai tanggal bulanan)
 # 🟢 SAMAKAN JOIN NYA KE TABEL 'users' DAN SINKRONKAN FILTER PERUSAHAAN
@@ -4040,31 +4060,8 @@ def superadmin_riwayat():
     f_company = (request.args.get("company") or "").strip() 
     status = (request.args.get("status") or "").strip()
     product = (request.args.get("product") or "").strip()
-    start_raw = (request.args.get("start") or "").strip()
-    end_raw = (request.args.get("end") or "").strip()
-
     # 3. Handle penanggalan (Parsing Date) -> INI HARUS DI ATAS QUERY UTAMA
-    today = business_today()
-    default_start = add_months(date(today.year, today.month, 1), -5)
-    default_end = today
-
-    def parse_date(raw, fallback):
-        if not raw:
-            return fallback
-        try:
-            return datetime.strptime(raw, "%Y-%m-%d").date()
-        except Exception:
-            return None
-
-    start_dt = parse_date(start_raw, default_start)
-    end_dt = parse_date(end_raw, default_end)
-    
-    if start_dt is None or end_dt is None:
-        flash("Tanggal filter tidak valid. Gunakan format YYYY-MM-DD.", "error")
-        start_dt, end_dt = default_start, default_end
-
-    if start_dt > end_dt:
-        start_dt, end_dt = end_dt, start_dt
+    start_dt, end_dt = history_date_range()
 
     # 4. Bangun Query Utama SQL (start_dt dan end_dt aman digunakan di sini)
     sql = f"""

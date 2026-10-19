@@ -26,11 +26,12 @@
     <input id="{{ prefix }}-job" name="jabatan" maxlength="255" value="{{ (record.jabatan or '') if record else '' }}">
   </div>
   <div class="field">
-    <label for="{{ prefix }}-status">Status</label>
+    <label for="{{ prefix }}-status">Status pribadi</label>
     <select id="{{ prefix }}-status" name="status">
       <option value="1"{% if not record or record.status_aktif == 1 %} selected{% endif %}>Aktif</option>
       <option value="0"{% if record and record.status_aktif != 1 %} selected{% endif %}>Tidak aktif</option>
     </select>
+    <p class="field-hint">Status ini tidak membuka blokir penagihan perusahaan.</p>
   </div>
   <h3 class="form-section-title">Perusahaan &amp; skema gaji</h3>
   <div class="field">

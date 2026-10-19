@@ -21,6 +21,7 @@
         <option value="{{ option.value }}"{% if option.value == periode %} selected{% endif %}>{{ option.label }}</option>
         {% endfor %}
       </select>
+      <p class="field-hint">Default bulan kalender berjalan. Pilihan lain diterapkan setelah klik Tampilkan.</p>
     </div>
     <button class="button button-primary" type="submit">{{ icon('filter') }} Tampilkan</button>
   </form>

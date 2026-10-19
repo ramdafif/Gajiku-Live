@@ -431,7 +431,7 @@ class AuditRegression(unittest.TestCase):
         queue._reset_after_fork()
     def test_all_templates_compile_and_static_endpoints_exist(self):
         from jinja2 import nodes
-        for path in (ROOT/'templates').glob('*.html'):
+        for path in (ROOT/'templates').rglob('*.html'):
             text=path.read_text(encoding='utf-8')
             template=self.app.jinja_env.parse(text)
             for call in template.find_all(nodes.Call):
@@ -566,6 +566,45 @@ class AuditRegression(unittest.TestCase):
         with self.client.session_transaction() as session:
             self.assertTrue(any('File tidak bisa dibaca' in message for category, message in session['_flashes']))
         self.assertEqual(self.query("SELECT COUNT(*) AS total FROM pegawai WHERE id_pegawai='XML1'")[0]['total'], 0)
+
+    def test_shared_theme_toggle_for_every_role(self):
+        cases = (
+            ('super@fixture.test', ('/superadmin/dashboard', '/superadmin/settings', '/superadmin/admins', '/superadmin/clients', '/superadmin/clients/1', '/superadmin/riwayat')),
+            ('admin@example.com', ('/admin/dashboard', '/admin/settings', '/admin/pegawai', '/admin/riwayat', '/admin/projects')),
+            ('employee1@fixture.test', ('/dashboard', '/settings', '/tarik-gaji', '/riwayat')),
+        )
+        for email, paths in cases:
+            client = self.app.test_client()
+            self.login(email, client=client)
+            for path in paths:
+                with self.subTest(role=email, path=path):
+                    response = client.get(path)
+                    self.assertEqual(response.status_code, 200)
+                    html = response.get_data(as_text=True)
+                    header = re.search(r'<header class="topbar">(.*?)</header>', html, re.S).group(1)
+                    self.assertEqual(header.count('data-theme-toggle'), 1)
+                    self.assertNotIn('data-dialog="help-dialog"', header)
+                    self.assertIn('data-dialog="help-dialog"', html)
+                    self.assertIn('id="help-dialog"', html)
+                    self.assertIn('id="i-sun"', html)
+                    self.assertIn('id="i-moon"', html)
+                    self.assertLess(html.index('/static/theme.js'), html.index('rel="stylesheet"'))
+                    theme_script = re.search(r'<script[^>]*src="[^"]*/static/theme\.js[^>]*>', html).group(0)
+                    self.assertNotRegex(theme_script, r'\b(?:async|defer)\b')
+
+    def test_auth_pages_share_theme_without_new_controls(self):
+        for path in ('/login', '/register', '/forgot'):
+            with self.subTest(path=path):
+                response = self.client.get(path)
+                self.assertEqual(response.status_code, 200)
+                html = response.get_data(as_text=True)
+                self.assertEqual(html.count('/static/theme.js'), 1)
+                self.assertLess(html.index('/static/theme.js'), html.index('rel="stylesheet"'))
+                self.assertNotIn('data-theme-toggle', html)
+                self.assertIn('name="color-scheme" content="light dark"', html)
+                self.assertIn('media="(prefers-color-scheme: dark)"', html)
+        for filename in ('theme.js', 'style.css', 'pages.css', 'responsive.css', 'app.js'):
+            self.assertEqual(self.client.get('/static/' + filename).status_code, 200, filename)
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

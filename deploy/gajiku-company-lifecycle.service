@@ -1,0 +1,18 @@
+[Unit]
+Description=GajiKu company billing and MoU reconciliation
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=gajiku
+Group=gajiku
+WorkingDirectory=/opt/gajiku/current
+EnvironmentFile=/etc/gajiku/gajiku.env
+Environment=START_INLINE_WORKER=0
+Environment=EXPORT_CSV_ENABLED=0
+ExecStart=/opt/gajiku/venv/bin/python -m flask --app wsgi:app sync-company-lifecycle
+TimeoutStartSec=180
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077

@@ -1,0 +1,11 @@
+[Unit]
+Description=Reconcile GajiKu company notices every minute
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+AccuracySec=1s
+Persistent=true
+Unit=gajiku-company-lifecycle.service
+
+[Install]
+WantedBy=timers.target
