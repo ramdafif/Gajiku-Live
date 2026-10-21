@@ -1,0 +1,15 @@
+{% extends 'layouts/base.html' %}
+{% from 'components/macros.html' import csrf, page_heading, empty_state with context %}
+{% block title %}Aktivitas &amp; Persetujuan Pegawai{% endblock %}
+{% block content %}
+{% call page_heading('PENGAWASAN', 'Aktivitas & persetujuan pegawai', 'Perubahan biasa langsung berlaku. Data terlindungi tetap memakai nilai lama sampai disetujui.') %}
+<a class="button button-secondary" href="{{ url_for('web.admin_pegawai') }}">Kelola pegawai</a>
+{% endcall %}
+<section class="card"><div class="table-scroll"><table class="data-table">
+<thead><tr><th>Batch / waktu</th><th>Perusahaan</th><th>Pelaku / sumber</th><th>Menunggu</th><th>Detail</th></tr></thead>
+<tbody>{% for batch in batches %}<tr><td>#{{ batch.id }}<small>{{ batch.created_at|notification_time }}</small></td>
+<td>{{ batch.name }}</td><td>{{ batch.actor }}<small>{{ batch.source }}</small></td><td>{{ batch.pending_count }}</td>
+<td><a class="button button-secondary button-small" href="{{ url_for('employees.detail', batch_id=batch.id) }}">Lihat perubahan</a></td></tr>
+{% else %}<tr><td colspan="5">Belum ada aktivitas.</td></tr>{% endfor %}</tbody></table></div></section>
+<nav class="filter-bar"><span>Halaman {{ page }}</span>{% if page > 1 %}<a href="{{ url_for('employees.inbox', page=page-1) }}">Sebelumnya</a>{% endif %}{% if batches|length == 50 %}<a href="{{ url_for('employees.inbox', page=page+1) }}">Berikutnya</a>{% endif %}</nav>
+{% endblock %}

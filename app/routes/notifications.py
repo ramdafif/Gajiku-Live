@@ -64,6 +64,8 @@ def inbox_endpoint():
 
 
 def target(notification):
+    if notification['kind'].startswith('employee_'):
+        return url_for('employees.detail', batch_id=int(notification['period_key'])) if notification['period_key'] else url_for('employees.inbox')
     if not session.get("is_superadmin"):
         return url_for("web.admin_dashboard")
     anchor = "mou-actions" if notification["kind"] == "mou" else "penagihan"

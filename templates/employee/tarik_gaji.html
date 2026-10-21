@@ -99,6 +99,9 @@
         <p class="text-small text-muted">Saldo reguler tersedia</p>
         <strong class="summary-balance amount">{{ limits.saldo|rupiah }}</strong>
         <dl class="detail-list">
+          <div><dt>Gaji pokok</dt><dd>{{ limits.gaji_pokok|rupiah if limits.gaji_pokok is not none else 'Belum diisi' }}</dd></div>
+          <div><dt>Plafon bulanan</dt><dd>{{ limits.plafon_bulanan|rupiah }}</dd></div>
+          <div><dt>Sisa bulanan</dt><dd>{{ limits.sisa_bulanan|rupiah }}</dd></div>
           <div>
             <dt>Sisa plafon</dt>
             <dd>{{ limits.sisa_plafon|rupiah }}</dd>

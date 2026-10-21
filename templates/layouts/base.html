@@ -51,6 +51,7 @@
           {% if not staff %}{% set navigation = navigation + [('web.tarik_gaji', 'wallet', 'Tarik gaji')] %}{% endif %}
           {% set navigation = navigation + [(history_endpoint, 'history', 'Riwayat transaksi')] %}
           {% if staff %}{% set navigation = navigation + [('web.admin_pegawai', 'users', 'Kelola pegawai')] %}{% endif %}
+          {% if staff %}{% set navigation = navigation + [('employees.inbox', 'shield', 'Approval pegawai')] %}{% endif %}
           {% if superuser %}{% set navigation = navigation + [('clients.superadmin_clients', 'building', 'Kelola perusahaan'), ('web.superadmin_admins', 'shield', 'Kelola admin')] %}{% elif staff and can_manage_projects %}{% set navigation = navigation + [('clients.admin_projects', 'folder', 'Kelola project')] %}{% endif %}
           {% for endpoint, symbol, label in navigation %}
           {% set active = current_endpoint == endpoint or (endpoint == 'clients.superadmin_clients' and current_endpoint == 'clients.superadmin_client_detail') %}

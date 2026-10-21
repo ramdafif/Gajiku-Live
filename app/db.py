@@ -582,6 +582,8 @@ def _ensure_db_schema():
     ensure_security_schema(get_db(), db_type)
     from app.services.company_lifecycle import ensure_lifecycle_schema
     ensure_lifecycle_schema(get_db(), db_type)
+    from app.services.employee_finance import ensure_employee_finance_schema
+    ensure_employee_finance_schema(get_db(), db_type)
 
 def _migrate_users_email_unique(db):
     try:

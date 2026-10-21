@@ -101,6 +101,8 @@ def harness(tmp_path, monkeypatch, database_config):
                        (employee_id, email, email, HASH, active, "2026-01-01"))
             db.execute("INSERT INTO users (id,name,email,gaji,created_at) VALUES (?,?,?,6000000,?)",
                        (employee_id, email, email, "2026-01-01"))
+        db.execute('UPDATE pegawai SET plafon=3000000')
+        db.execute('UPDATE users SET pegawai_id=id')
         db.commit()
     return result
 
@@ -176,6 +178,7 @@ def test_late_payment_needs_one_company_activation_preserving_personal_status(ha
         with harness.app.test_request_context():
             from flask import session
             session["formal_email"] = formal_email
+            session['user_id'] = employee_id
             assert web.get_formal_status() == (0 if employee_id == 3 else 1)
     assert harness.query("SELECT status_aktif FROM pegawai WHERE id=3")[0]["status_aktif"] == 0
     harness.sync(at(11, 12))

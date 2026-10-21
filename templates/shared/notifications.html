@@ -25,7 +25,7 @@
       <div class="notification-item-meta"><time>{{ notification.created_at|notification_time }}</time><span class="badge {{ 'badge-neutral' if notification.read_at else 'badge-blue' }}">{{ 'Sudah dibaca' if notification.read_at else 'Belum dibaca' }}</span>{% if notification.resolved_at %}<span class="badge badge-success">Ditindaklanjuti</span>{% endif %}</div>
       <h2>{{ notification.title }}</h2><p>{{ notification.message }}</p>
       <div class="lifecycle-actions">
-        <form method="post" action="{{ url_for('notifications.read_one', notification_id=notification.id) }}">{{ csrf() }}<input type="hidden" name="open" value="1"><button type="submit" class="button button-secondary button-small">{{ 'Buka perusahaan' if superuser else 'Buka dashboard' }} {{ icon('arrow-right') }}</button></form>
+        <form method="post" action="{{ url_for('notifications.read_one', notification_id=notification.id) }}">{{ csrf() }}<input type="hidden" name="open" value="1"><button type="submit" class="button button-secondary button-small">{{ 'Buka perubahan pegawai' if notification.kind.startswith('employee_') else 'Buka perusahaan' if superuser else 'Buka dashboard' }} {{ icon('arrow-right') }}</button></form>
         {% if not notification.read_at %}
         <form method="post" action="{{ url_for('notifications.read_one', notification_id=notification.id) }}">{{ csrf() }}<input type="hidden" name="status" value="{{ status }}"><button type="submit" class="button button-ghost button-small">Tandai dibaca</button></form>
         {% endif %}

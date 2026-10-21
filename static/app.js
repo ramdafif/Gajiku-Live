@@ -236,6 +236,7 @@
             project.add(new Option(name, name)),
           );
         project.required = Boolean(client?.allow_projects);
+        if (project.closest(".field")) project.closest(".field").hidden = !client?.allow_projects;
         select("[data-project-hint]", form).textContent =
           client?.allow_projects && !client.projects.length
             ? "Belum ada project. Tambahkan di Kelola project sebelum menyimpan pegawai."

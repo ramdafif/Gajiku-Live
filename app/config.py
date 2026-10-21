@@ -11,7 +11,6 @@ class Config:
     MAX_FORM_MEMORY_SIZE = 64 * 1024
     MAX_FORM_PARTS = 100
     ALLOW_DATE_OVERRIDE = os.environ.get("ALLOW_DATE_OVERRIDE", "0") == "1"
-    ALLOW_DESTRUCTIVE_RESET = os.environ.get("ALLOW_DESTRUCTIVE_RESET", "0") == "1"
     ENABLE_TEST_ENDPOINTS = os.environ.get("ENABLE_TEST_ENDPOINTS", "0") == "1"
     SEED_DEMO_DATA = os.environ.get("SEED_DEMO_DATA", "0") == "1"
     TEMPLATES_AUTO_RELOAD = True

@@ -1,0 +1,11 @@
+{% extends 'layouts/base.html' %}
+{% from 'components/macros.html' import csrf, page_heading with context %}
+{% block title %}Pratinjau Edit Massal{% endblock %}
+{% block content %}
+{% call page_heading('PRATINJAU', 'Edit ' ~ targets|length ~ ' pegawai - ' ~ client.name, 'Target dibekukan selama 15 menit. Data yang berubah mengharuskan pratinjau ulang.') %}{% endcall %}
+<div class="notice notice-warning mb-24"><span>{{ 'Perubahan langsung berlaku. Penurunan plafon dapat menghentikan akses penarikan.' if superuser else 'Perubahan gaji/plafon menjadi usulan, bukan langsung berlaku. Superadmin harus menyetujuinya.' }}</span></div>
+<section class="card"><div class="table-scroll"><table class="data-table" data-paginate="25"><thead><tr><th>Pegawai</th><th>Field</th><th>Sebelum</th><th>Sesudah</th></tr></thead><tbody>
+{% for target in targets %}{% for field,value in target.patch.items() %}<tr><td>{{ target.before.nama }} / {{ target.before.id_pegawai }}</td><td>{{ field }}</td><td>{{ target.before[field] if target.before[field] is not none else 'Belum diisi' }}</td><td>{{ value if value is not none else 'Belum diisi / ikuti PT' }}</td></tr>{% endfor %}{% endfor %}
+</tbody></table></div></section>
+<form method="post" action="{{ url_for('employees.bulk') }}" class="dialog-actions">{{ csrf() }}<input type="hidden" name="preview_token" value="{{ token }}"><a class="button button-secondary" href="{{ url_for('web.admin_pegawai', client=client.name) }}">Batal</a><button class="button button-primary" type="submit">Konfirmasi perubahan</button></form>
+{% endblock %}

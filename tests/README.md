@@ -6,6 +6,7 @@ Jalankan dari root repository:
 python -m pytest -q
 node --test tests/theme.test.cjs
 node --test tests/notifications.test.cjs
+node --test tests/employees.test.cjs
 ```
 
 Suite membuat fixture SQLite di direktori temporary dan menonaktifkan worker/export
@@ -45,6 +46,16 @@ memaksa worker/export background mati lewat `/usr/bin/env`, termasuk ketika
 EnvironmentFile systemd berisi nilai yang mengaktifkannya.
 
 ## Integrasi MySQL/MariaDB terisolasi
+
+`test_employee_changes.py` menguji pemisahan gaji/plafon, migrasi idempotent,
+fee khusus superadmin, perubahan pribadi langsung, approval finansial, impor,
+edit massal lintas halaman, konflik dan keputusan bersamaan, identitas stabil,
+periode mingguan/bulanan, serta pemblokiran tagihan. Sertakan file ini pada
+perintah fixture MySQL untuk mengulang validasi di kedua backend.
+Tes JavaScript pegawai memeriksa seleksi halaman/review dan keputusan approval
+ketika tombol submit dinonaktifkan oleh handler loading bersama.
+Panduan cutover wajib: `deploy-employee-finance.md`; jangan menjalankan aplikasi
+versi lama terhadap database yang sudah dikonversi.
 
 Suite default tetap memakai SQLite. Untuk mengulang pengujian lifecycle dan
 periode pada MySQL/MariaDB, siapkan instance lokal BARU dengan datadir di `tmp/`

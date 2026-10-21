@@ -61,6 +61,8 @@ class AuditRegression(unittest.TestCase):
                     db.execute("INSERT INTO users (id,name,email,gaji,created_at) VALUES (?,?,?,6000000,?)",(employee_id,f"Employee Fixture {employee_id}",email,TODAY))
                     for offset,product in ((0,"reg"),(10,"urg")):
                         db.execute("INSERT INTO transactions (id,user_id,tanggal,periode,nominal,admin_fee,status,created_at,product,cancel_until) VALUES (?,?,?,?,10000,15000,'on-proses',?,?,?)",(employee_id+offset,employee_id,TODAY,PERIOD,TODAY+'T09:00:00',product,(datetime.now()+timedelta(seconds=25)).isoformat()))
+            db.execute('UPDATE pegawai SET plafon=3000000')
+            db.execute('UPDATE users SET pegawai_id=id')
             db.commit()
     @classmethod
     def tearDownClass(cls):
@@ -144,7 +146,7 @@ class AuditRegression(unittest.TestCase):
         self.login()
         before=self.query('SELECT COUNT(*) AS total FROM transactions')[0]['total']
         for path in ('/reset','/admin/reset','/admin/reset_all','/superadmin/reset','/superadmin/reset_all'):
-            self.assertEqual(self.post(path).status_code,403,path)
+            self.assertEqual(self.post(path).status_code,404,path)
         self.post('/admin/products',{'products':'reg'})
         self.assertEqual(self.query("SELECT value FROM app_settings WHERE key='enabled_products'")[0]['value'],'reg,urg')
         self.assertEqual(self.query('SELECT COUNT(*) AS total FROM transactions')[0]['total'],before)
@@ -311,7 +313,7 @@ class AuditRegression(unittest.TestCase):
         self.login()
         response=self.client.get('/admin/pegawai/import/template')
         workbook=load_workbook(io.BytesIO(response.data))
-        self.assertEqual(workbook.active.max_column,14)
+        self.assertEqual(workbook.active.max_column,15)
         workbook.close()
         workbook=Workbook()
         workbook.active.append(['ID','Nama','Email','Jabatan','Project','Rek','Rek2','EW','Telp','Gaji','Status','Siklus','Fee','Perusahaan'])
@@ -320,7 +322,9 @@ class AuditRegression(unittest.TestCase):
         workbook.save(output)
         output.seek(0)
         self.post('/admin/pegawai/import',{'file':(output,'fixture.xlsx')})
-        self.assertEqual(self.query("SELECT perusahaan_induk FROM pegawai WHERE id_pegawai='NEW1'")[0]['perusahaan_induk'],'Fixture PT One')
+        self.assertEqual(self.query("SELECT perusahaan_induk FROM pegawai WHERE id_pegawai='NEW1'"),[])
+        with self.client.session_transaction() as session:
+            self.assertTrue(any('template v2' in message for category,message in session['_flashes']))
     def test_windu_cannot_bypass_admin_layer(self):
         self.query("UPDATE pegawai SET perusahaan_induk='Windu Karya' WHERE id=1")
         self.query("UPDATE admins SET company='Windu Karya',hak_approval=0 WHERE id=2")
@@ -331,12 +335,12 @@ class AuditRegression(unittest.TestCase):
         self.login()
         self.post('/admin/pegawai/2/update',{'id_pegawai':'E2','nama':'Changed','email':'employee2@fixture.test','gaji':'1','status':'1','perusahaan_induk':'Fixture PT One','perusahaan':'Project 1'})
         self.assertEqual(self.query('SELECT gaji FROM pegawai WHERE id=2')[0]['gaji'],6000000)
-    def test_legacy_blanks_preserved_on_edit(self):
+    def test_unassigned_legacy_employee_requires_reconciliation(self):
         self.query("UPDATE pegawai SET perusahaan_induk='',perusahaan='' WHERE id=3")
         self.login('super@fixture.test')
         self.post('/admin/pegawai/3/update',{'id_pegawai':'E3','nama':'Updated Fixture','email':'employee3@fixture.test','gaji':'5000000','status':'1','siklus_gaji':'A','perusahaan_induk':'','perusahaan':''})
         row=self.query('SELECT nama,perusahaan_induk,perusahaan FROM pegawai WHERE id=3')[0]
-        self.assertEqual(row,{'nama':'Updated Fixture','perusahaan_induk':'','perusahaan':''})
+        self.assertEqual(row,{'nama':'Employee Fixture 3','perusahaan_induk':'','perusahaan':''})
     def test_client_mou_and_disallow_validation(self):
         self.login('super@fixture.test')
         self.post('/superadmin/clients',{'name':'Invalid MoU','mou_start':'2026-12-31','mou_end':'2026-01-01'})

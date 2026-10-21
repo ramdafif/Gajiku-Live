@@ -139,7 +139,7 @@ def refresh_identity():
                     session.update(is_admin=True, is_superadmin=False, company=current_app.config.get("ADMIN_COMPANY", ""), hak_approval=False)
     else:
         account = get_db().execute("""SELECT ua.password_hash, ua.email FROM users u
-            JOIN pegawai p ON LOWER(p.email)=LOWER(u.email)
+            JOIN pegawai p ON p.id=u.pegawai_id
             JOIN user_accounts ua ON ua.pegawai_id=p.id AND LOWER(ua.email)=LOWER(p.email)
             WHERE u.id=?""", (session["user_id"],)).fetchone()
         if account:
@@ -183,7 +183,8 @@ def serialized_withdrawal(function):
             if isinstance(db, sqlite3.Connection):
                 db.execute("BEGIN IMMEDIATE")
             else:
-                db.execute("""SELECT p.id FROM pegawai p JOIN users u ON LOWER(p.email)=LOWER(u.email)
+                db.execute("SELECT value FROM app_settings WHERE `key`='employee_write_lock' FOR UPDATE").fetchone()
+                db.execute("""SELECT p.id FROM pegawai p JOIN users u ON p.id=u.pegawai_id
                     WHERE u.id=? FOR UPDATE""", (session["user_id"],)).fetchall()
             key = withdrawal_key(request.form.get("request_token"))
             if not key:
@@ -259,11 +260,6 @@ def serialized_transaction(function):
     return wrapped
 
 
-def require_destructive_reset():
-    if not session.get("is_superadmin"):
-        abort(403)
-    if not current_app.config.get("ALLOW_DESTRUCTIVE_RESET"):
-        abort(403, description="Reset massal dinonaktifkan. Gunakan prosedur maintenance dan backup.")
 
 
 def safe_return_url(fallback):

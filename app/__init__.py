@@ -8,6 +8,8 @@ from flask import Flask, redirect, url_for, session, request, g, jsonify
 from app.db import close_db, ensure_db, get_db
 from app.routes.web import bp as web_bp
 from app.routes.clients import bp as clients_bp
+from app.routes.employees import bp as employees_bp
+from app.services.employee_finance import register_finance_commands
 from app.routes.notifications import bp as notifications_bp, management_context, refresh_management_notices
 from app.tasks.company_lifecycle import register_command
 from app.tasks.queue import start_worker
@@ -81,6 +83,8 @@ def create_app(test_config=None):
 
     app.register_blueprint(web_bp)
     app.register_blueprint(clients_bp)
+    app.register_blueprint(employees_bp)
+    register_finance_commands(app)
     app.register_blueprint(notifications_bp)
     app.context_processor(management_context)
     register_command(app)

@@ -112,6 +112,11 @@ def billing_state(db, client_id, now=None):
     if not setting:
         return {"configured": False, "blocked": False, "bills": [], "overdue": [], "setting": None}
     setting = dict(setting)
+    client_row = db.execute('SELECT * FROM clients WHERE id=?', (client_id,)).fetchone()
+    client = dict(client_row) if client_row else {}
+    if client.get('plafon_confirmed_at'):
+        from app.services.employee_finance import period_billing_state
+        return period_billing_state(db, client, setting, today)
     bills = [dict(row) for row in db.execute(
         "SELECT * FROM client_bills WHERE client_id=? ORDER BY due_on", (client_id,)
     ).fetchall()]
@@ -156,7 +161,8 @@ def sync_client(db, client, now=None):
         for bill in state["bills"]:
             if bill["id"] is None:
                 insert_once(db, "client_bills", {"client_id": client["id"], "period": bill["period"],
-                            "due_on": as_date(bill["due_on"]).isoformat(), "created_at": timestamp(now)})
+                            "due_on": as_date(bill["due_on"]).isoformat(), "created_at": timestamp(now),
+                            "service_start": bill.get('service_start'), "service_end": bill.get('service_end')})
         state = billing_state(db, client["id"], now)
         if state["overdue"] and not state["setting"]["blocked_at"]:
             db.execute("UPDATE client_billing SET blocked_at=? WHERE client_id=?", (timestamp(now), client["id"]))
@@ -226,7 +232,7 @@ def activate_company(db, client, actor, now=None):
     now = local_now(now)
     sync_client(db, client, now)
     state = billing_state(db, client["id"], now)
-    if not state["configured"] or state["overdue"]:
+    if not state["configured"] or state["overdue"] or state.get('configuration_required'):
         raise ValueError("Lunasi seluruh tagihan jatuh tempo sebelum mengaktifkan kembali perusahaan.")
     blocked_at = state["setting"]["blocked_at"]
     if not blocked_at:

@@ -64,7 +64,22 @@
   </div>
   <div class="field">
     <label for="{{ prefix }}-salary">Gaji pokok (Rp)</label>
-    <input id="{{ prefix }}-salary" type="number" name="gaji" min="0" max="2147483647" step="1" required value="{{ record.gaji if record else '' }}" inputmode="numeric" placeholder="Tanpa titik atau koma">
+    <input id="{{ prefix }}-salary" type="number" name="gaji" min="0" max="2147483647" step="1" value="{{ record.gaji if record and record.gaji is not none else '' }}" inputmode="numeric" placeholder="Kosong jika belum diketahui">
+    <p class="field-hint">Gaji aktual, bukan plafon. Tidak ada gaji asumsi.</p>
+  </div>
+  <div class="field">
+    <label for="{{ prefix }}-plafon-mode">Mode plafon bulanan</label>
+    <select id="{{ prefix }}-plafon-mode" name="plafon_mode"><option value="nominal">Nominal seragam</option><option value="persentase">Persentase gaji</option></select>
+  </div>
+  <div class="field">
+    <label for="{{ prefix }}-plafon">Plafon nominal bulanan (Rp)</label>
+    <input id="{{ prefix }}-plafon" type="number" name="plafon" min="0" max="2147483647" step="1" value="{{ record.plafon if record and record.plafon is not none else '' }}">
+    <p class="field-hint">Isi untuk mode nominal. Cutoff mingguan membuka maksimal 25% per minggu.</p>
+  </div>
+  <div class="field">
+    <label for="{{ prefix }}-plafon-persen">Plafon persentase (%)</label>
+    <input id="{{ prefix }}-plafon-persen" type="number" name="plafon_persen" min="0" max="100" step="0.0001" value="{{ record.plafon_persen if record and record.plafon_persen is not none else '' }}">
+    <p class="field-hint">Isi untuk mode persentase. Gaji wajib terisi; dihitung ulang saat gaji berubah.</p>
   </div>
   <div class="field">
     <label for="{{ prefix }}-cycle">Siklus gaji</label>
@@ -77,8 +92,8 @@
   {% if superuser %}
   <div class="field field-full">
     <label for="{{ prefix }}-fee">Biaya admin dasar (Rp)</label>
-    <input id="{{ prefix }}-fee" type="number" name="admin_fee_flat" min="0" max="1000000" step="1" required value="{{ record.admin_fee_flat if record else '' }}" placeholder="Isi manual, 0 - 1.000.000" inputmode="numeric">
-    <p class="field-hint">Wajib diisi manual. PPN mengikuti pengaturan sistem.</p>
+    <input id="{{ prefix }}-fee" type="number" name="admin_fee_flat" min="0" max="1000000" step="1" value="{{ record.admin_fee_flat if record and record.admin_fee_flat is not none else '' }}" placeholder="Kosong = ikuti fee PT" inputmode="numeric">
+    <p class="field-hint">Kosong mengikuti default PT termasuk perubahan berikutnya. Angka 0 berarti pengecualian gratis.</p>
   </div>
   {% endif %}
   <h3 class="form-section-title">Rekening tujuan</h3>

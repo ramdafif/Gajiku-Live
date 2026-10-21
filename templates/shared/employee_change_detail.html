@@ -1,0 +1,26 @@
+{% extends 'layouts/base.html' %}
+{% from 'components/macros.html' import csrf, page_heading with context %}
+{% block title %}Review Perubahan Pegawai{% endblock %}
+{% block content %}
+{% call page_heading('REVIEW PEGAWAI', 'Batch #' ~ batch.id ~ ' - ' ~ batch.name, 'Pembuat: ' ~ batch.actor ~ '. Membaca halaman ini tidak menyetujui perubahan.') %}
+<a class="button button-secondary" href="{{ url_for('employees.inbox') }}">Semua aktivitas</a>{% endcall %}
+<form method="post" class="form-stack" data-review-form>
+<input type="hidden" name="decision" value="">
+{{ csrf() }}
+<label class="switch-row"><span>Pilih seluruh item menunggu</span><input type="checkbox" data-select-items></label>
+{% for item in items %}
+<section class="card mb-24"><div class="card-header"><h2>
+{% if item.status == 'pending' and (superuser or own_request) %}<input type="checkbox" name="item_ids" value="{{ item.id }}" aria-label="Pilih item {{ item.id }}">{% endif %}
+{{ item.employee_name or ('Pegawai #' ~ item.employee_id) }} <small>Item #{{ item.id }} / {{ item.operation }}</small></h2>
+<span class="badge badge-neutral">{{ item.status }}</span></div>
+<div class="table-scroll"><table class="data-table"><thead><tr><th>Field</th><th>Sebelum</th><th>Usulan / hasil</th></tr></thead><tbody>
+{% for field,value in item.proposed.items() %}<tr><td>{{ field }}</td><td>{{ item.before.get(field) if item.before.get(field) is not none else 'Belum diisi' }}</td><td>{{ value if value is not none else 'Belum diisi / ikuti PT' }}</td></tr>{% endfor %}
+</tbody></table></div>{% if item.reason %}<p class="card-body">{{ item.reason }}{% if item.reviewer %} &middot; {{ item.reviewer }}{% endif %}</p>{% endif %}</section>
+{% endfor %}
+<div class="field"><label for="review-reason">Catatan / alasan (wajib untuk penolakan)</label><textarea id="review-reason" name="reason" maxlength="2000"></textarea></div>
+<div class="dialog-actions">
+{% if superuser %}<button type="submit" class="button button-primary" value="approve">Setujui yang dipilih</button><button type="submit" class="button button-secondary" value="reject">Tolak yang dipilih</button>{% endif %}
+{% if superuser or own_request %}<button type="submit" class="button button-ghost" value="cancel">Batalkan usulan terpilih</button>{% endif %}
+</div></form>
+<script src="{{ url_for('static', filename='employees.js') }}" defer></script>
+{% endblock %}

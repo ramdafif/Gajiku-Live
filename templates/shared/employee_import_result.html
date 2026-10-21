@@ -1,0 +1,14 @@
+{% extends 'layouts/base.html' %}
+{% from 'components/macros.html' import page_heading with context %}
+{% block title %}Hasil Impor Pegawai{% endblock %}
+{% block content %}
+{% call page_heading('IMPOR PEGAWAI', 'Hasil impor', saved ~ ' pegawai ' ~ action ~ '; ' ~ errors|length ~ ' baris gagal.') %}
+<a class="button button-secondary" href="{{ url_for('web.admin_pegawai') }}">Kembali ke pegawai</a>
+{% endcall %}
+<div class="notice notice-info mb-24"><span>Baris valid sudah diproses. Perbaiki dan unggah ulang hanya baris gagal agar tidak mengajukan duplikat.</span></div>
+{% for batch_id in batches %}<p><a href="{{ url_for('employees.detail', batch_id=batch_id) }}">Lihat batch persetujuan #{{ batch_id }}</a></p>{% endfor %}
+<section class="card"><div class="card-header"><h2>Semua kesalahan per baris</h2></div>
+<div class="table-scroll"><table class="data-table"><thead><tr><th>Kesalahan</th></tr></thead><tbody>
+{% for message in errors %}<tr><td>{{ message }}</td></tr>{% endfor %}
+</tbody></table></div></section>
+{% endblock %}

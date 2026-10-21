@@ -64,7 +64,7 @@
       <input type="date" name="end" id="history-end" value="{{ end }}" required>
     </div>
     <button type="submit" class="button button-primary">{{ icon('filter') }} Terapkan</button>
-    <a class="button button-secondary" href="{{ url_for(history_endpoint) }}">Reset</a>
+    <a class="button button-secondary" href="{{ url_for(history_endpoint) }}">Hapus filter</a>
   </form>
   {% if rows %}
   <div class="table-scroll" tabindex="0" role="region" aria-label="Riwayat transaksi">

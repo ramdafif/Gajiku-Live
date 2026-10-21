@@ -16,6 +16,14 @@
   </div>
 </section>
 <section class="card mb-24" id="penagihan" aria-labelledby="billing-title">
+  <div class="card-header"><h2>Plafon &amp; fee perusahaan</h2></div>
+  <form class="card-body form-stack" method="post" action="{{ url_for('employees.company_policy', client_id=client.id) }}">{{ csrf() }}
+    <div class="field"><label for="plafon-start">Tanggal awal periode plafon bulanan</label><input id="plafon-start" name="plafon_start_day" type="number" min="1" max="31" required value="{{ client.plafon_start_day or '' }}"></div>
+    <div class="field"><label for="pt-fee">Fee dasar PT (Rp)</label><input id="pt-fee" name="default_admin_fee" type="number" min="0" max="1000000" required value="{{ client.default_admin_fee }}"></div>
+    <p class="field-hint">Konfirmasi sesuai MoU sebelum penarikan mingguan diaktifkan. Tanggal 29-31 mengikuti akhir bulan. Tanggal plafon berbeda dari jatuh tempo. Periode baru tetap terkunci jika tagihan periode sebelumnya belum lunas, meski belum jatuh tempo.</p>
+    {% if client.period_history %}<p class="field-hint">Riwayat/jadwal periode: {{ client.period_history }}</p>{% endif %}
+    <button type="submit" class="button button-primary">Simpan &amp; konfirmasi pengaturan PT</button>
+  </form>
   <div class="card-header">
     <div><h2 id="billing-title">Penagihan &amp; akses karyawan</h2><p>Satu aktivasi perusahaan membuka akses seluruh karyawan yang terblokir karena tagihan.</p></div>
     <span class="badge {{ 'badge-danger' if billing.blocked else 'badge-success' if billing.configured else 'badge-neutral' }}">{{ 'Nonaktif karena tagihan' if billing.blocked else 'Aktif' if billing.configured else 'Belum diatur' }}</span>
@@ -29,7 +37,8 @@
       <button class="button button-secondary" type="submit">Simpan jadwal</button>
     </form>
     <p class="field-hint">Semua waktu WIB. Tanggal 29-31 mengikuti hari terakhir bulan jika diperlukan. Jadwal pertama tidak menagih mundur. Perubahan jadwal berlaku setelah jatuh tempo terakhir yang sudah tercatat.</p>
-    <p class="field-hint">Tagihan untuk bulan sebelumnya. Jika jatuh tempo tanggal 10, peringatan muncul tanggal 7-10 dan pengajuan baru terkunci tanggal 11 pukul 00.00 WIB jika belum lunas.</p>
+    <p class="field-hint">Setelah periode plafon dikonfirmasi, pengajuan terkunci pada awal periode berikutnya jika tagihan sebelumnya belum lunas; tidak menunggu jatuh tempo. Pelunasan tidak mengembalikan plafon yang sudah dipakai.</p>
+    {% if billing.configuration_required %}<p class="notice notice-warning">Rentang tagihan lama belum direkonsiliasi: {{ billing.legacy_bill_ids|join(', ') }}. Akses terkunci sampai operator memetakan rentang tagihan dengan CLI map-legacy-bill.</p>{% endif %}
     {% if billing.blocked %}
     <div class="notice notice-warning mt-24"><span>Setelah seluruh tunggakan lunas, klik Aktifkan Kembali satu kali. Karyawan otomatis bisa mengajukan lagi; yang nonaktif secara pribadi tetap nonaktif. Pengajuan lama tetap dapat diproses.</span></div>
     <form method="post" action="{{ url_for('notifications.activate', client_id=client.id) }}" class="mt-24" data-confirm="Aktifkan kembali akses seluruh karyawan yang terblokir karena tagihan perusahaan ini?">
@@ -44,7 +53,7 @@
       <thead><tr><th>Periode tagihan</th><th>Jatuh tempo</th><th>Status pembayaran</th><th>Pencatatan lunas</th><th>Tindakan</th></tr></thead>
       <tbody>{% for bill in billing.bills|reverse %}
         <tr>
-          <td>{{ bill.period|format_period_label }}</td><td>{{ bill.due_on|indo_date }}</td>
+          <td>{% if bill.service_start %}{{ bill.service_start }} sampai sebelum {{ bill.service_end }}{% else %}{{ bill.period|format_period_label }}{% endif %}</td><td>{{ bill.due_on|indo_date }}</td>
           <td><span class="badge {{ 'badge-success' if bill.paid_at else 'badge-warning' }}">{{ 'Lunas' if bill.paid_at else 'Belum lunas' }}</span></td>
           <td>{% if bill.paid_at %}{{ bill.paid_at|notification_time }}<small>{{ bill.paid_by }}</small>{% else %}-{% endif %}</td>
           <td>{% if not bill.paid_at and bill.id %}

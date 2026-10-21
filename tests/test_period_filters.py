@@ -100,6 +100,9 @@ def period_harness(tmp_path, monkeypatch, database_config):
                                "VALUES (?,?,?,?,1000,100,'sukses',?,'reg',?)",
                                (transaction_id, employee_id, day, period, day + "T12:00:00", marker))
         connection.commit()
+        connection.execute('UPDATE pegawai SET plafon=3000000')
+        connection.execute('UPDATE users SET pegawai_id=id')
+        connection.commit()
     yield harness
     _cache.clear()
 

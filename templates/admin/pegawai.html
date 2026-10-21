@@ -5,6 +5,7 @@
 {% block breadcrumb %}Kelola pegawai{% endblock %}
 {% block content %}
 {% call page_heading('PEGAWAI', 'Kelola Pegawai', 'Kelola data pegawai, rekening, dan skema gaji.') %}
+<a class="button button-secondary" href="{{ url_for('employees.inbox') }}">Aktivitas &amp; approval</a>
 <button type="button" class="button button-secondary" data-dialog="import-dialog">{{ icon('upload') }} Impor Excel</button>
 <button type="button" class="button button-primary" data-dialog="employee-add">{{ icon('plus') }} Tambah pegawai</button>
 {% endcall %}
@@ -22,7 +23,7 @@
   <div class="card-header">
     <div>
       <h2>Master pegawai</h2>
-      <p>Perubahan data berlaku sesuai validasi backend.</p>
+      <p>{{ 'Perubahan langsung berlaku dan dicatat dalam audit.' if superuser else 'Tambah, impor, gaji/plafon, aktivasi dan siklus menunggu approval. Perubahan pribadi langsung berlaku dan dilaporkan.' }}</p>
     </div>
     <a href="{{ url_for('web.admin_pegawai_import_template') }}" class="text-link">{{ icon('download') }} Template Excel</a>
   </div>
@@ -53,13 +54,14 @@
       </select>
     </div>
     <button class="button button-primary" type="submit">{{ icon('filter') }} Terapkan</button>
-    <a href="{{ url_for('web.admin_pegawai') }}" class="button button-secondary">Reset</a>
+    <a href="{{ url_for('web.admin_pegawai') }}" class="button button-secondary">Hapus filter</a>
   </form>
   {% if rows %}
   <div class="table-scroll" tabindex="0" role="region" aria-label="Master pegawai">
-    <table class="data-table" data-paginate="10">
+    <table class="data-table">
       <thead>
         <tr>
+          <th><input type="checkbox" data-select-employees aria-label="Pilih semua di halaman ini"></th>
           <th scope="col">Pegawai</th>
           <th scope="col">Perusahaan / project</th>
           <th scope="col">Gaji &amp; skema</th>
@@ -74,6 +76,7 @@
       <tbody>
         {% for row in rows %}
         <tr>
+          <td><input type="checkbox" name="employee_ids" value="{{ row.id }}" form="employee-bulk" aria-label="Pilih {{ row.nama }}"></td>
           <td>
             <div class="cell-person">{{ avatar(row.nama) }}<span>
                 <strong>{{ row.nama }}</strong>
@@ -85,7 +88,8 @@
           <td>{{ row.perusahaan_induk or '-' }}<small>{{ row.perusahaan or '-' }}</small>
           </td>
           <td>
-            <strong class="amount">{{ row.gaji|rupiah }}</strong>
+            <strong class="amount">{{ row.gaji|rupiah if row.gaji is not none else 'Belum diisi' }}</strong>
+            <small>Plafon bulanan: {{ row.plafon|rupiah if row.plafon is not none else 'Belum dimigrasi' }}{% if row.plafon_mode == 'persentase' %} ({{ row.plafon_persen }}% gaji){% endif %}</small>
             <small>
               {% if row.cutoff_mingguan_aktif %}Cutoff {{ ['Senin','Selasa','Rabu','Kamis','Jumat','Sabtu','Minggu'][(row.cutoff_hari or 0)|int] }}{% else %}Siklus {{ row.siklus_gaji or '-' }}{% endif %}
             </small>
@@ -102,11 +106,11 @@
               </span>{{ 'Nonaktif karena tagihan' if row.billing_blocked else 'Aktif' if row.status_aktif == 1 else 'Tidak aktif' }}</span>
           </td>
           {% if superuser %}
-          <td>{{ row.admin_fee_flat|rupiah }}</td>
+          <td>{{ row.effective_fee|rupiah }}<small>{{ 'Ikuti fee PT' if row.admin_fee_flat is none else 'Pengecualian' }}</small></td>
           {% endif %}
           <td>
             <div class="row-actions">
-              <button type="button" class="button button-secondary button-small" data-dialog="employee-edit" data-form-action="{{ url_for('web.admin_pegawai_update', pid=row.id) }}" data-form-values='{{ {'perusahaan_induk':row.perusahaan_induk,'perusahaan':row.perusahaan,'id_pegawai':row.id_pegawai,'nama':row.nama,'email':row.email,'no_telp':row.no_telp,'jabatan':row.jabatan,'status':row.status_aktif,'gaji':row.gaji,'siklus_gaji':row.siklus_gaji,'admin_fee_flat':row.admin_fee_flat if superuser else none,'no_rekening':row.no_rekening,'no_rekening_lain':row.no_rekening_lain,'rekening_ewallet':row.rekening_ewallet}|tojson }}'>{{ icon('edit') }} Edit</button>
+              <button type="button" class="button button-secondary button-small" data-dialog="employee-edit" data-form-action="{{ url_for('web.admin_pegawai_update', pid=row.id) }}" data-form-values='{{ {'perusahaan_induk':row.perusahaan_induk,'perusahaan':row.perusahaan,'id_pegawai':row.id_pegawai,'nama':row.nama,'email':row.email,'no_telp':row.no_telp,'jabatan':row.jabatan,'status':row.status_aktif,'gaji':row.gaji,'plafon':row.plafon,'plafon_mode':row.plafon_mode,'plafon_persen':row.plafon_persen,'siklus_gaji':row.siklus_gaji,'admin_fee_flat':row.admin_fee_flat if superuser else none,'no_rekening':row.no_rekening,'no_rekening_lain':row.no_rekening_lain,'rekening_ewallet':row.rekening_ewallet}|tojson }}'>{{ icon('edit') }} Edit</button>
               <form action="{{ url_for('web.admin_pegawai_delete', pid=row.id) }}" method="post" data-confirm="Hapus master pegawai {{ row.nama }} ({{ row.id_pegawai }})? Data terkait dan izin penghapusan akan diperiksa server." data-confirm-title="Hapus data pegawai?">{{ csrf() }}<button class="icon-button text-danger" type="submit" aria-label="Hapus pegawai {{ row.nama }}">{{ icon('trash') }}</button>
               </form>
             </div>
@@ -117,7 +121,20 @@
     </table>
   </div>
   {% else %}{{ empty_state('Belum ada pegawai yang cocok', 'Ubah filter, tambahkan pegawai, atau impor menggunakan template Excel.', 'users') }}{% endif %}
+  <nav class="filter-bar"><span>{{ total }} pegawai. Halaman {{ page }} / {{ pages }}</span>{% if page > 1 %}<a class="button button-secondary" href="{{ url_for('web.admin_pegawai', page=page-1, q=q, company=f_company, client=selected_client) }}">Sebelumnya</a>{% endif %}{% if page < pages %}<a class="button button-secondary" href="{{ url_for('web.admin_pegawai', page=page+1, q=q, company=f_company, client=selected_client) }}">Berikutnya</a>{% endif %}</nav>
 </section>
+<section class="card mt-24"><div class="card-header"><h2>Edit massal satu PT</h2></div>
+<form id="employee-bulk" method="post" action="{{ url_for('employees.bulk') }}" class="card-body form-stack">{{ csrf() }}
+<input type="hidden" name="client" value="{{ selected_client }}"><input type="hidden" name="q" value="{{ q }}"><input type="hidden" name="company" value="{{ f_company }}">
+{% if superuser and not selected_client %}<p class="notice notice-warning">Pilih satu perusahaan pada filter sebelum mengedit massal.</p>{% endif %}
+<label><input type="checkbox" name="all_filtered" value="1"> Pilih seluruh hasil filter PT ini, termasuk halaman lain ({{ total }} pegawai)</label>
+<div class="form-grid">
+<div class="field"><label><input type="checkbox" name="set_gaji" value="1"> Ubah gaji pokok</label><input name="gaji" type="number" min="0" max="2147483647" placeholder="Kosong = belum diisi"></div>
+<div class="field"><label><input type="checkbox" name="set_plafon" value="1"> Ubah plafon</label><select name="plafon_mode"><option value="nominal">Nominal seragam</option><option value="persentase">Persentase gaji masing-masing</option></select></div>
+<div class="field"><label>Nominal plafon bulanan (Rp)</label><input name="plafon" type="number" min="0" max="2147483647"></div>
+<div class="field"><label>Persentase plafon (%)</label><input name="plafon_persen" type="number" min="0" max="100" step="0.0001"></div>
+{% if superuser %}<div class="field"><label><input type="checkbox" name="set_admin_fee_flat" value="1"> Ubah pengecualian fee</label><input name="admin_fee_flat" type="number" min="0" max="1000000" placeholder="Kosong = ikuti fee PT"></div>{% endif %}
+</div><button class="button button-primary" type="submit"{% if superuser and not selected_client %} disabled{% endif %}>Pratinjau perubahan</button></form></section>
 <dialog class="dialog" id="employee-add" aria-labelledby="employee-add-title">
   <div class="dialog-header">
     <h2 id="employee-add-title">Tambah pegawai</h2>
@@ -151,10 +168,11 @@
       <label for="employee-file">File Excel (.xlsx)</label>
       <input id="employee-file" type="file" name="file" accept=".xlsx" required>
     </div>
-    <div class="notice notice-info">{{ icon('info') }}<span>{{ 'Gunakan template terbaru dengan kolom perusahaan dan biaya admin manual.' if superuser else 'Data hanya boleh berisi pegawai dalam cakupan perusahaan Anda.' }}</span>
+    <div class="notice notice-info">{{ icon('info') }}<span>{{ 'Gunakan template v2. Fee kosong mengikuti PT; gaji dan plafon terpisah.' if superuser else 'Perusahaan dan fee otomatis. Pegawai baru menunggu persetujuan superadmin.' }}</span>
     </div>
     <button class="button button-primary button-full" type="submit" data-loading-text="Memproses file...">{{ icon('upload') }} Impor data pegawai</button>
   </form>
 </dialog>
 <script type="application/json" id="client-catalog">{{ client_catalog|tojson }}</script>
+<script src="{{ url_for('static', filename='employees.js') }}" defer></script>
 {% endblock %}

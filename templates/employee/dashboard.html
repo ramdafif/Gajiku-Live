@@ -69,12 +69,16 @@
   </section>
 </div>
 <div class="metric-grid">
+  {{ metric('Gaji pokok', limits.gaji_pokok|rupiah if limits.gaji_pokok is not none else 'Belum diisi', 'Gaji aktual yang dicatat perusahaan', 'wallet') }}
+  {{ metric('Plafon bulanan', limits.plafon_bulanan|rupiah, limits.monthly_start ~ ' s.d. ' ~ limits.monthly_end, 'calendar') }}
+  {{ metric('Sisa plafon bulanan', limits.sisa_bulanan|rupiah, 'Setelah pengajuan sukses dan sedang diproses', 'wallet') }}
   {{ metric('Plafon ' ~ ('mingguan' if limits.cutoff_mingguan else 'periode'), limits.plafon|rupiah, 'Batas akses gaji periode berjalan', 'wallet', 'accent-blue') }}
   {{ metric('Akumulasi per hari', limits.limit_harian|rupiah, 'Hari ke-' ~ limits.hari_ke ~ ' dari ' ~ limits.limit_period_days, 'calendar') }}
   {{ metric('Pengajuan selesai', total_nom|rupiah, 'Dari transaksi terbaru yang selesai', 'check', 'accent-green') }}
   {{ metric('Sisa plafon URG' if 'urg' in enabled_products else 'Sisa plafon', sisa_plafon_urg|rupiah, 'Sesuai produk aktif perusahaan', 'spark', 'accent-amber') }}
 </div>
 <div class="dashboard-grid dashboard-lower">
+  {% if limits.configuration_required %}<div class="notice notice-warning"><span>Data plafon atau konfigurasi periode PT belum dikonfirmasi. Hubungi admin; penarikan sementara belum tersedia.</span></div>{% endif %}
   <section class="card">
     <div class="card-header">
       <div>
