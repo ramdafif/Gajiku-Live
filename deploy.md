@@ -2,7 +2,11 @@ Udah gue cocokkan **Redesign lokal dengan konfigurasi dan skema MySQL VPS**. Bis
 
 **VPS tetap read-only:** gue tidak mengubah file, ENV, data, atau service.
 
-## Kondisi VPS Sekarang
+Panduan setelah `git pull` beserta migrasi lifecycle terbaru ada di
+`deploy-vps-after-pull.md`. Kondisi VPS di dokumen ini adalah catatan inspeksi
+sebelumnya, bukan verifikasi ulang pada sesi pengujian terbaru.
+
+## Catatan Kondisi VPS
 - Production: `/home/gajiku/app/gajiku`, service `gajiku.service`, Gunicorn 3 worker di `127.0.0.1:5000`.
 - Nginx meneruskan `gajiku.net`, `app.gajiku.net`, dan `www.gajiku.net` ke port 5000.
 - MySQL **8.0.46**, database `gajiku_db`. Kolom approval, cutoff, produk, dan perusahaan induk sudah tersedia.
@@ -32,6 +36,10 @@ Urutan skrip yang diperlukan:
 
 2. **`migrasidb/migrasi_security_hardening.sql:5`**
    Membuat tabel rate limit dan registrasi tertunda, serta menambahkan `transactions.request_key` dengan unique index. `pegawai_archive` sudah ada, sehingga tidak perlu dibuat ulang.
+
+3. **`migrasidb/migrasi_company_lifecycle.sql:1`**
+   Menambahkan konfigurasi penagihan, tagihan unik per periode, tindak lanjut MoU,
+   event notifikasi, dan status baca per akun tanpa mengubah status pribadi pegawai.
 
 **Migrasi lama untuk approval/cutoff/produk tidak perlu diulang berdasarkan skema yang gue periksa.**
 
@@ -100,7 +108,7 @@ Jangan mematikan inline worker tanpa RQ worker yang berfungsi.
 
 1. **Commit/push Redesign secara terpilih**, lalu ambil commit yang pasti ke direktori release terpisah; jangan menimpa source yang sedang melayani production.
 2. Siapkan virtualenv release, dependency, ENV, dan shared storage.
-3. Backup DB, jalankan dua migrasi, lalu verifikasi skema dan mapping client.
+3. Backup DB, jalankan tiga migrasi, lalu verifikasi skema dan mapping client.
 4. Jalankan candidate di **loopback port 5010**, scheduler nonaktif. Periksa `/ping`, `/health/db`, login, template, aset, serta worker.
 5. Setelah candidate sehat, ubah target Nginx dari 5000 ke 5010, validasi konfigurasi, lalu **graceful reload Nginx**. Nginx mempertahankan worker lama untuk menyelesaikan request yang sedang dilayani. 
 6. Setelah traffic lama selesai, tangani antrean inline yang tersisa sebelum menghentikan instance lama, lalu aktifkan satu scheduler baru. **Kode lama belum memberikan jaminan drain antrean inline**, jadi zero-loss notifikasi belum bisa dijanjikan.

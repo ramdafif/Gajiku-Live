@@ -11,7 +11,7 @@ WorkingDirectory=/opt/gajiku/current
 EnvironmentFile=/etc/gajiku/gajiku.env
 Environment=START_INLINE_WORKER=0
 Environment=EXPORT_CSV_ENABLED=0
-ExecStart=/opt/gajiku/venv/bin/python -m flask --app wsgi:app sync-company-lifecycle
+ExecStart=/usr/bin/env START_INLINE_WORKER=0 EXPORT_CSV_ENABLED=0 /opt/gajiku/venv/bin/python -m flask --app wsgi:app sync-company-lifecycle
 TimeoutStartSec=180
 NoNewPrivileges=true
 PrivateTmp=true

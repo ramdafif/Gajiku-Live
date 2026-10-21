@@ -56,7 +56,7 @@ class PeriodHarness:
 
 
 @pytest.fixture
-def period_harness(tmp_path, monkeypatch):
+def period_harness(tmp_path, monkeypatch, database_config):
     _cache.clear()
     monkeypatch.setattr(web, "business_today", lambda: TODAY)
     monkeypatch.setattr(company_lifecycle, "business_now", lambda: datetime(2026, 10, 19, 12, tzinfo=company_lifecycle.WIB))
@@ -64,7 +64,7 @@ def period_harness(tmp_path, monkeypatch):
     app = create_app({"TESTING": True, "DB_TYPE": "sqlite", "DB_PATH": str(tmp_path / "periods.db"),
                       "APP_SECRET": "isolated-period-fixture-not-production", "SESSION_COOKIE_SECURE": False,
                       "ADMIN_PASSWORD": "", "SUPERADMIN_PASSWORD": "", "SEED_DEMO_DATA": False,
-                      "ALLOW_DATE_OVERRIDE": False, "ALLOW_DESTRUCTIVE_RESET": False})
+                      "ALLOW_DATE_OVERRIDE": False, "ALLOW_DESTRUCTIVE_RESET": False, **database_config})
     harness = PeriodHarness(app)
     with app.app_context():
         connection = get_db()
@@ -181,7 +181,7 @@ def test_employee_other_periods_require_explicit_selection(period_harness):
 def test_weekly_employee_still_defaults_to_calendar_month(period_harness):
     period_harness.query("UPDATE admins SET cutoff_mingguan_aktif=1, cutoff_hari=2 WHERE id=2")
     for transaction in period_harness.query("SELECT id,tanggal FROM transactions WHERE user_id=1"):
-        period = web.weekly_period_key(date.fromisoformat(transaction["tanggal"]), 2)
+        period = web.weekly_period_key(company_lifecycle.as_date(transaction["tanggal"]), 2)
         period_harness.query("UPDATE transactions SET periode=? WHERE id=?", (period, transaction["id"]))
     period_harness.login("employee1@fixture.test")
     _, context = period_harness.render("/riwayat")

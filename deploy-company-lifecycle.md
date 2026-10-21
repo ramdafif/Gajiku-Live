@@ -4,6 +4,8 @@ Implementasi berada di Redesign. Dokumen dan unit systemd adalah persiapan deplo
 bukan bukti fitur sudah terpasang di production. Jangan menjalankan perintah di
 VPS sebelum backup dan verifikasi konfigurasi release.
 
+Tutorial operasional setelah `git pull` ada di `deploy-vps-after-pull.md`.
+
 ## Perilaku
 
 - Superadmin mengatur tanggal bulanan melalui detail perusahaan, bagian Penagihan.
@@ -40,7 +42,9 @@ VPS sebelum backup dan verifikasi konfigurasi release.
 4. Sesuaikan User, Group, WorkingDirectory, EnvironmentFile, dan ExecStart pada
    `deploy/gajiku-company-lifecycle.service` dengan jalur release/venv VPS sebenarnya.
    `/opt/gajiku` adalah contoh, bukan hasil deteksi VPS. Simpan secret di file ENV
-   dengan izin terbatas, bukan di unit atau repository.
+   dengan izin terbatas, bukan di unit atau repository. Pertahankan prefix
+   `/usr/bin/env START_INLINE_WORKER=0 EXPORT_CSV_ENABLED=0` pada ExecStart;
+   EnvironmentFile systemd dapat menimpa nilai Environment pada unit.
 5. Uji runner pada staging dengan worker/email export dimatikan:
 
    ```sh
@@ -93,5 +97,6 @@ node --test tests/notifications.test.cjs
 Fixture SQLite bersifat sementara dan tidak menghubungi MySQL/SMTP. Bila direktori
 temporary pytest Windows tidak dapat diakses, gunakan `--basetemp` dengan direktori
 baru/unik di dalam `tmp/`; pytest dapat menghapus isi basetemp, jadi jangan menunjuk
-folder kerja atau direktori yang sudah berisi data. Integrasi MySQL/systemd tetap
-perlu diverifikasi di staging VPS.
+folder kerja atau direktori yang sudah berisi data. Jalur MySQL telah diuji pada
+MariaDB lokal terisolasi, termasuk pengulangan ketiga migrasi. Verifikasi versi
+MySQL production, systemd, SMTP, dan Nginx tetap perlu dilakukan di staging VPS.

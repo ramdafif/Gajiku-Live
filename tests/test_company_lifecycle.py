@@ -66,7 +66,7 @@ class Harness:
 
 
 @pytest.fixture
-def harness(tmp_path, monkeypatch):
+def harness(tmp_path, monkeypatch, database_config):
     _cache.clear()
     monkeypatch.setattr(lifecycle, "business_now", lambda: at(10, 19))
     monkeypatch.setattr(web, "business_today", lambda: lifecycle.business_now().date())
@@ -74,7 +74,7 @@ def harness(tmp_path, monkeypatch):
     app = create_app({"TESTING": True, "DB_TYPE": "sqlite", "DB_PATH": str(tmp_path / "company.db"),
                       "APP_SECRET": "isolated-company-fixture-not-production", "SESSION_COOKIE_SECURE": False,
                       "ADMIN_PASSWORD": "", "SUPERADMIN_PASSWORD": "", "SEED_DEMO_DATA": False,
-                      "ALLOW_DATE_OVERRIDE": False, "ALLOW_DESTRUCTIVE_RESET": False})
+                      "ALLOW_DATE_OVERRIDE": False, "ALLOW_DESTRUCTIVE_RESET": False, **database_config})
     result = Harness(app)
     with app.app_context():
         db = get_db()
@@ -405,8 +405,8 @@ def test_concurrent_runner_and_schema_retries_are_idempotent(harness):
     assert len(harness.query("SELECT * FROM notifications WHERE kind='billing_blocked'")) == 1
     assert len(harness.query("SELECT * FROM client_bills")) == 2
     with harness.app.app_context():
-        lifecycle.ensure_lifecycle_schema(get_db(), "sqlite")
-        lifecycle.ensure_lifecycle_schema(get_db(), "sqlite")
+        lifecycle.ensure_lifecycle_schema(get_db(), harness.app.config["DB_TYPE"])
+        lifecycle.ensure_lifecycle_schema(get_db(), harness.app.config["DB_TYPE"])
     assert len(harness.query("SELECT * FROM client_bills")) == 2
 
 
