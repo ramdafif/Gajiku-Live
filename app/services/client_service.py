@@ -1,5 +1,9 @@
 from datetime import datetime
+import re
 import sqlite3
+
+DEFAULT_REG_WITHDRAWAL_MAX = 1_000_000
+REG_WITHDRAWAL_MAX_VALUE = 2_147_483_647
 
 
 PROJECT_NAMES = {
@@ -18,6 +22,19 @@ def client_by_name(db, name, lock=False):
     suffix = " FOR UPDATE" if lock and not isinstance(db, sqlite3.Connection) else ""
     row = db.execute("SELECT * FROM clients WHERE name_key=?" + suffix, (name_key(name),)).fetchone()
     return dict(row) if row else None
+
+def parse_reg_withdrawal_max(raw):
+    value = (raw or "").strip()
+    if not re.fullmatch(r"[0-9]{1,10}", value):
+        raise ValueError("Maksimal penarikan reguler harus berupa rupiah bulat positif tanpa pemisah ribuan.")
+    nominal = int(value)
+    if not 1 <= nominal <= REG_WITHDRAWAL_MAX_VALUE:
+        raise ValueError("Maksimal penarikan reguler harus antara Rp1 dan Rp2.147.483.647.")
+    return nominal
+
+def get_reg_withdrawal_max(db, company):
+    client = client_by_name(db, company)
+    return client["reg_withdrawal_max"] if client else DEFAULT_REG_WITHDRAWAL_MAX
 
 
 def project_in_use(db, client, project_key=None):
@@ -62,6 +79,7 @@ def ensure_clients_schema(db, db_type):
             npwp VARCHAR(50) DEFAULT '', pic_name VARCHAR(255) DEFAULT '',
             pic_role VARCHAR(100) DEFAULT '', pic_email VARCHAR(255) DEFAULT '',
             pic_phone VARCHAR(50) DEFAULT '', allow_projects INTEGER NOT NULL DEFAULT 0,
+            reg_withdrawal_max INTEGER NOT NULL DEFAULT {DEFAULT_REG_WITHDRAWAL_MAX},
             mou_number VARCHAR(255) DEFAULT '', mou_start DATE, mou_end DATE,
             notes TEXT, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL
         ){suffix}
@@ -84,6 +102,16 @@ def ensure_clients_schema(db, db_type):
             exists = db.execute("SELECT 1 FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name=?", (table,)).fetchone()
         if not exists:
             db.execute(schema)
+    if db_type == "sqlite":
+        client_columns = {row[1] for row in db.execute("PRAGMA table_info(clients)").fetchall()}
+        limit_column_exists = "reg_withdrawal_max" in client_columns
+    else:
+        limit_column_exists = db.execute("""
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema=DATABASE() AND table_name='clients' AND column_name='reg_withdrawal_max'
+        """).fetchone()
+    if not limit_column_exists:
+        db.execute(f"ALTER TABLE clients ADD COLUMN reg_withdrawal_max INTEGER NOT NULL DEFAULT {DEFAULT_REG_WITHDRAWAL_MAX}")
     if db_type == "sqlite":
         columns = {row[1] for row in db.execute("PRAGMA table_info(pegawai)").fetchall()}
         if "perusahaan_induk" not in columns:

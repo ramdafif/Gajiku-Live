@@ -1,6 +1,7 @@
 import ast
 import csv
 import io
+import json
 import os
 import re
 import shutil
@@ -523,6 +524,160 @@ class AuditRegression(unittest.TestCase):
         self.assertEqual(self.query("SELECT COUNT(*) AS total FROM clients WHERE name='Invalid MoU'")[0]['total'],0)
         self.post('/superadmin/clients/1',{'name':'Fixture PT One','allow_projects':'0'})
         self.assertEqual(self.query('SELECT allow_projects FROM clients WHERE id=1')[0]['allow_projects'],1)
+    def test_company_regular_limit_create_and_form(self):
+        self.login('super@fixture.test')
+        html = self.client.get('/superadmin/clients').get_data(as_text=True)
+        self.assertRegex(html, r'name="reg_withdrawal_max"[^>]*value="1000000"')
+        for name, limit in (('Default Limit PT', None), ('Lower Limit PT', '500000'),
+                            ('Higher Limit PT', '2000000'), ('Minimum Limit PT', '1'),
+                            ('Maximum Limit PT', '2147483647')):
+            with self.subTest(name=name):
+                data = {'name': name}
+                if limit is not None:
+                    data['reg_withdrawal_max'] = limit
+                response = self.post('/superadmin/clients', data)
+                self.assertEqual(response.status_code, 302)
+                saved = self.query('SELECT reg_withdrawal_max FROM clients WHERE name=?', (name,))[0]
+                self.assertEqual(saved['reg_withdrawal_max'], int(limit or '1000000'))
+                html = self.client.get(response.location).get_data(as_text=True)
+                self.assertIn('Maksimal penarikan reguler per transaksi', html)
+                self.assertRegex(html, rf'name="reg_withdrawal_max"[^>]*value="{limit or "1000000"}"')
+
+    def test_company_regular_limit_update_preserve_and_reset(self):
+        self.login('super@fixture.test')
+        transactions = self.query('SELECT * FROM transactions ORDER BY id')
+        data = {'name': 'Fixture PT One', 'allow_projects': '1', 'reg_withdrawal_max': '2000000'}
+        self.post('/superadmin/clients/1', data)
+        self.assertEqual(self.query('SELECT reg_withdrawal_max FROM clients ORDER BY id'),
+                         [{'reg_withdrawal_max': 2000000}, {'reg_withdrawal_max': 1000000}])
+        del data['reg_withdrawal_max']
+        self.post('/superadmin/clients/1', data)
+        self.assertEqual(self.query('SELECT reg_withdrawal_max FROM clients WHERE id=1')[0]['reg_withdrawal_max'], 2000000)
+        data['reg_withdrawal_max'] = '1000000'
+        self.post('/superadmin/clients/1', data)
+        self.assertEqual(self.query('SELECT reg_withdrawal_max FROM clients WHERE id=1')[0]['reg_withdrawal_max'], 1000000)
+        self.assertEqual(self.query('SELECT * FROM transactions ORDER BY id'), transactions)
+
+    def test_company_regular_limit_invalid_input_rejected(self):
+        self.login('super@fixture.test')
+        self.query('UPDATE clients SET reg_withdrawal_max=2000000 WHERE id=1')
+        for raw in ('', '0', '-1', '1.5', '1000000.0', '1.000.000', '1,000,000',
+                    'abc', '1e6', '2147483648', '9' * 100, '\u0661'):
+            with self.subTest(raw=raw):
+                self.post('/superadmin/clients/1', {'name': 'Fixture PT One', 'allow_projects': '1',
+                                                  'reg_withdrawal_max': raw})
+                self.assertEqual(self.query('SELECT reg_withdrawal_max FROM clients WHERE id=1')[0]['reg_withdrawal_max'], 2000000)
+                self.post('/superadmin/clients', {'name': 'Invalid Limit PT', 'reg_withdrawal_max': raw})
+                self.assertEqual(self.query("SELECT COUNT(*) AS total FROM clients WHERE name='Invalid Limit PT'")[0]['total'], 0)
+
+    def test_company_regular_limit_permissions_and_csrf(self):
+        for email, status in (('admin@example.com', 403), ('employee1@fixture.test', 302)):
+            client = self.app.test_client()
+            self.login(email, client)
+            for path in ('/superadmin/clients', '/superadmin/clients/1'):
+                with self.subTest(email=email, path=path):
+                    response = self.post(path, {'name': 'Fixture PT One', 'reg_withdrawal_max': '500000'}, client)
+                    self.assertEqual(response.status_code, status)
+        self.login('super@fixture.test')
+        self.assertEqual(self.client.post('/superadmin/clients/1', data={
+            'name': 'Fixture PT One', 'reg_withdrawal_max': '500000'}).status_code, 400)
+        self.assertEqual(self.query('SELECT reg_withdrawal_max FROM clients ORDER BY id'),
+                         [{'reg_withdrawal_max': 1000000}, {'reg_withdrawal_max': 1000000}])
+
+    def prepare_company_limit_withdrawal(self, limit=None):
+        at_date = datetime.fromisoformat(TODAY).date().replace(day=25)
+        self.enterContext(patch.object(web, 'current_sim_date', return_value=at_date))
+        self.enterContext(patch.object(web, 'enqueue_email'))
+        self.query('DELETE FROM transactions')
+        if limit is not None:
+            self.query('UPDATE clients SET reg_withdrawal_max=? WHERE id=1', (limit,))
+        self.login('employee1@fixture.test')
+
+    def company_withdrawal_config(self, response=None):
+        response = response or self.client.get('/tarik-gaji')
+        self.assertEqual(response.status_code, 200)
+        config = re.search(r'<script[^>]*id="withdrawal-config"[^>]*>(.*?)</script>',
+                           response.get_data(as_text=True)).group(1)
+        return json.loads(config)
+
+    def test_withdrawal_regular_limit_company_scope_and_fallback(self):
+        self.prepare_company_limit_withdrawal(2000000)
+        self.assertEqual(self.company_withdrawal_config()['regMax'], 2000000)
+        self.query("UPDATE pegawai SET perusahaan='Fixture PT Two', perusahaan_induk='  FIXTURE PT ONE  ' WHERE id=1")
+        self.assertEqual(self.company_withdrawal_config()['regMax'], 2000000)
+        with self.client.session_transaction() as session:
+            session['company'] = 'Fixture PT One'
+        for company in ('Fixture PT Two', '', 'Unregistered PT'):
+            with self.subTest(company=company):
+                self.query('UPDATE pegawai SET perusahaan_induk=? WHERE id=1', (company,))
+                self.assertEqual(self.company_withdrawal_config()['regMax'], 1000000)
+        other = self.app.test_client()
+        self.login('employee2@fixture.test', other)
+        self.assertEqual(self.company_withdrawal_config(other.get('/tarik-gaji'))['regMax'], 1000000)
+        self.query("UPDATE pegawai SET perusahaan_induk='Fixture PT One' WHERE id=2")
+        self.assertEqual(self.company_withdrawal_config(other.get('/tarik-gaji'))['regMax'], 2000000)
+
+    def test_withdrawal_regular_limit_boundaries_and_server_validation(self):
+        self.prepare_company_limit_withdrawal()
+        for limit in (1000000, 500000, 2000000):
+            with self.subTest(limit=limit):
+                self.query('DELETE FROM transactions')
+                self.query('UPDATE clients SET reg_withdrawal_max=? WHERE id=1', (limit,))
+                data = self.withdrawal_data()
+                data.update(nominal=str(limit + 1), reg_withdrawal_max='999999999',
+                            perusahaan_induk='Fixture PT Two')
+                response = self.post('/tarik-gaji', data)
+                self.assertEqual(self.company_withdrawal_config(response)['regMax'], limit)
+                self.assertIn('Nominal REG maksimal', response.get_data(as_text=True))
+                self.assertEqual(self.query('SELECT COUNT(*) AS total FROM transactions')[0]['total'], 0)
+                data['nominal'] = str(limit)
+                self.assertEqual(self.post('/tarik-gaji', data).status_code, 302)
+                self.assertEqual(self.query('SELECT nominal,product FROM transactions'),
+                                 [{'nominal': limit, 'product': 'reg'}])
+
+    def test_withdrawal_regular_limit_still_enforces_available_balance(self):
+        self.prepare_company_limit_withdrawal(3000000)
+        config = self.company_withdrawal_config()
+        self.assertEqual(config['saldo'], 2500000)
+        html = self.client.get('/tarik-gaji').get_data(as_text=True)
+        label = re.search(r'data-limit-label>(.*?)</strong>', html).group(1)
+        self.assertEqual(label, web.rupiah_format(config['saldo']))
+        data = self.withdrawal_data()
+        data['nominal'] = str(config['saldo'] + 1)
+        response = self.post('/tarik-gaji', data)
+        self.assertIn('Permintaan melebihi limit plafon harian', response.get_data(as_text=True))
+        self.assertEqual(self.query('SELECT COUNT(*) AS total FROM transactions')[0]['total'], 0)
+        data['nominal'] = str(config['saldo'])
+        self.assertEqual(self.post('/tarik-gaji', data).status_code, 302)
+        self.assertEqual(self.query('SELECT nominal FROM transactions')[0]['nominal'], config['saldo'])
+
+    def test_withdrawal_regular_limit_refreshes_on_stale_form(self):
+        self.prepare_company_limit_withdrawal(2000000)
+        data = self.withdrawal_data()
+        superadmin = self.app.test_client()
+        self.login('super@fixture.test', superadmin)
+        company_data = {'name': 'Fixture PT One', 'allow_projects': '1', 'reg_withdrawal_max': '500000'}
+        self.post('/superadmin/clients/1', company_data, superadmin)
+        data['nominal'] = '1000000'
+        response = self.post('/tarik-gaji', data)
+        self.assertEqual(self.company_withdrawal_config(response)['regMax'], 500000)
+        self.assertEqual(self.query('SELECT COUNT(*) AS total FROM transactions')[0]['total'], 0)
+        data = self.withdrawal_data()
+        company_data['reg_withdrawal_max'] = '2000000'
+        self.post('/superadmin/clients/1', company_data, superadmin)
+        data['nominal'] = '1500000'
+        self.assertEqual(self.post('/tarik-gaji', data).status_code, 302)
+        self.assertEqual(self.query('SELECT nominal FROM transactions')[0]['nominal'], 1500000)
+
+    def test_withdrawal_urgent_ignores_company_regular_limit(self):
+        self.prepare_company_limit_withdrawal(500000)
+        self.enterContext(patch.object(web, 'get_ppn_enabled', return_value=False))
+        data = self.withdrawal_data()
+        data.update(produk='urg', nominal='1500000')
+        self.assertEqual(self.post('/tarik-gaji', data).status_code, 302)
+        self.assertEqual(self.query('SELECT nominal,product,admin_fee FROM transactions'),
+                         [{'nominal': 1500000, 'product': 'urg', 'admin_fee': 15000}])
+
     def test_inactive_admin_env_cannot_bypass(self):
         self.app.config.update(ADMIN_EMAIL='disabled@fixture.test',ADMIN_PASSWORD=PASSWORD)
         response=self.client.post('/login',data={'csrf_token':self.csrf(),'email':'disabled@fixture.test','password':PASSWORD})

@@ -22,6 +22,12 @@
     <label for="{{ prefix }}-npwp">NPWP</label>
     <input id="{{ prefix }}-npwp" name="npwp" maxlength="50" value="{{ (record.npwp or '') if record else '' }}">
   </div>
+  <h3 class="form-section-title">Pengaturan penarikan</h3>
+  <div class="field field-full">
+    <label for="{{ prefix }}-reg-withdrawal-max">Maksimal penarikan reguler per transaksi (Rp)</label>
+    <input id="{{ prefix }}-reg-withdrawal-max" name="reg_withdrawal_max" type="number" min="1" max="2147483647" step="1" inputmode="numeric" required value="{{ record.reg_withdrawal_max if record else 1000000 }}" aria-describedby="{{ prefix }}-reg-withdrawal-hint">
+    <p class="field-hint" id="{{ prefix }}-reg-withdrawal-hint">Berlaku untuk seluruh karyawan dan project perusahaan ini, khusus reguler per transaksi. Saldo tersedia tetap membatasi penarikan. Isi 1000000 untuk kembali ke default Rp1.000.000.</p>
+  </div>
   <h3 class="form-section-title">Penanggung jawab (PIC)</h3>
   {% for field,label in [('pic_name','Nama PIC'),('pic_role','Jabatan PIC'),('pic_email','Email PIC'),('pic_phone','Telepon PIC')] %}
   <div class="field">

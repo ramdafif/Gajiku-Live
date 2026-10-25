@@ -5,6 +5,7 @@ from flask import Blueprint, abort, flash, redirect, render_template, request, s
 
 from app.db import get_db
 from app.services.client_service import PROJECT_NAMES, client_by_name, list_clients, list_projects, name_key, project_in_use
+from app.services.client_service import DEFAULT_REG_WITHDRAWAL_MAX, parse_reg_withdrawal_max
 from app.services.company_lifecycle import billing_state, local_now, mou_period
 
 
@@ -88,6 +89,11 @@ def save_client(existing=None):
         existing = client_by_name(db, existing["name"], lock=True)
     if existing and values["name"] != existing["name"]:
         raise ValueError("Nama PT existing dikunci untuk menjaga relasi pegawai dan akun admin.")
+    raw_limit = request.form.get("reg_withdrawal_max")
+    values["reg_withdrawal_max"] = (
+        parse_reg_withdrawal_max(raw_limit) if raw_limit is not None
+        else existing["reg_withdrawal_max"] if existing else DEFAULT_REG_WITHDRAWAL_MAX
+    )
     values["allow_projects"] = 1 if request.form.get("allow_projects") == "1" else 0
     for field in ("mou_start", "mou_end"):
         raw = request.form.get(field) or ""

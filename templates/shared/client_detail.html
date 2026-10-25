@@ -36,6 +36,12 @@
           <dt>NPWP</dt>
           <dd>{{ client.npwp or '-' }}</dd>
         </div>
+        {% if superuser %}
+        <div>
+          <dt>Maksimal penarikan reguler per transaksi</dt>
+          <dd>{{ client.reg_withdrawal_max|rupiah }}</dd>
+        </div>
+        {% endif %}
       </dl>
     </div>
   </section>

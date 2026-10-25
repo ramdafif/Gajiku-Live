@@ -20,6 +20,7 @@ from app.utils.cache import get_cache, set_cache, clear_cache_prefix
 from app.tasks.queue import get_stats as get_queue_stats
 from app.services.email_service import enqueue_email
 from app.services.client_service import client_by_name, employee_assignment, list_clients, list_projects, name_key
+from app.services.client_service import get_reg_withdrawal_max
 from app.services.security_service import (business_today, credential_version, rate_limit, require_destructive_reset,
     safe_return_url, serialized_admin_write, serialized_employee_write, serialized_transaction, serialized_withdrawal, token_serializer, withdrawal_key, withdrawal_token)
 from itsdangerous import BadSignature, SignatureExpired
@@ -158,8 +159,7 @@ VALID_SIKLUS = tuple(SIKLUS_START_DAY.keys())
 # TIDAK lagi dipakai untuk validasi. Validasi memakai ADMIN_FEE_FLAT_MIN/MAX di bawah.
 ADMIN_FEE_FLAT_OPTIONS = (15000, 17000)
 ADMIN_FEE_FLAT_MIN = 0
-ADMIN_FEE_FLAT_MAX = 1_000_000   # batas pengaman salah ketik (sama dgn batas nominal REG)
-REG_WITHDRAWAL_MAX = 1_000_000
+ADMIN_FEE_FLAT_MAX = 1_000_000   # batas pengaman salah ketik
 
 def normalize_siklus(value: str, default: str = "A") -> str:
     siklus = (value or default).strip().upper()
@@ -1385,6 +1385,7 @@ def tarik_gaji():
     except Exception:
         pass
     enabled_products = get_products_for_company(pegawai_company)
+    reg_withdrawal_max = get_reg_withdrawal_max(db, pegawai_company)
     selected_product = enabled_products[0] if enabled_products else "reg"
     pegawai_rekening = None
     try:
@@ -1408,7 +1409,7 @@ def tarik_gaji():
             limits=form_limits,
             ADMIN_FEE=admin_fee_base,
             ADMIN_FEE_PER_DAY=admin_fee_per_day,
-            REG_WITHDRAWAL_MAX=REG_WITHDRAWAL_MAX,
+            REG_WITHDRAWAL_MAX=reg_withdrawal_max,
             ppn_enabled=ppn_enabled,
             enabled_products=enabled_products,
             selected_product=product or selected_product,
@@ -1495,8 +1496,8 @@ def tarik_gaji():
 
         # --- Validasi & fee ---
         if produk == "reg":
-            if nominal > REG_WITHDRAWAL_MAX:
-                flash(f"Nominal REG maksimal {rupiah_format(REG_WITHDRAWAL_MAX)} per pengajuan.", "error")
+            if nominal > reg_withdrawal_max:
+                flash(f"Nominal REG maksimal {rupiah_format(reg_withdrawal_max)} per pengajuan.", "error")
                 return render_tarik(at_day, lim_day, selected_product, selected_rekening_key)
             if nominal > lim_day["saldo"]:
                 flash(f"Permintaan melebihi limit plafon harian. Sisa hari ini: {rupiah_format(lim_day['saldo'])}.", "error")
