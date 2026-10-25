@@ -11,9 +11,9 @@
 {% endif %}
 {% call page_heading('SUPERADMIN' if superuser else 'ADMIN', 'Dashboard ' ~ ('Superadmin' if superuser else 'Admin'), 'Pantau pengajuan, pegawai, dan transaksi.') %}{% if superuser %}
 <button type="button" class="button button-secondary" data-dialog="products-dialog">{{ icon('settings') }} Kelola produk</button>
-<button type="button" class="button button-primary" data-dialog="export-dialog">{{ icon('download') }} Export CSV</button>
+<button type="button" class="button button-primary" data-dialog="export-dialog">{{ icon('download') }} Export Excel</button>
 {% else %}
-<button type="button" class="button button-secondary" data-dialog="export-dialog">{{ icon('download') }} Export CSV</button>
+<button type="button" class="button button-secondary" data-dialog="export-dialog">{{ icon('download') }} Export Excel</button>
 {% endif %}{% endcall %}
 <section class="overview-banner mb-24">
   <div>
@@ -189,7 +189,7 @@
   <div class="card-header">
     <div>
       <h2>Rekap biaya admin</h2>
-      <p>Pengajuan selesai &middot; {{ admin_fee_recap_label|default(filter_current_month|format_period_label) }}</p>
+      <p>Pengajuan selesai &middot; {{ admin_fee_recap_label|default(filter_current_month|format_period_label) }} &middot; Semua perusahaan</p>
     </div>
     <form method="get" class="inline wrap compact-filter">
       <div class="field">

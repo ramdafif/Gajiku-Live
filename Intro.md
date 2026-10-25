@@ -33,7 +33,7 @@ Arsitektur: **monolit Python Flask + Jinja**, bukan React/Next.js atau Supabase.
 - `app/repositories/user_repo.py`: helper lookup `users`; bukan repository layer lengkap.
 - `app/services/email_service.py`: SMTP SSL, attachment, enqueue email.
 - `app/tasks/queue.py`, `app/tasks/worker.py`, `app/tasks/jobs.py`: antrean inline atau Redis/RQ, worker dan job email.
-- `app/tasks/export_scheduler.py`: CSV otomatis bulan kalender berjalan dan email laporan.
+- `app/tasks/export_scheduler.py`: Excel otomatis bulan kalender berjalan dan email laporan.
 - `app/utils/cache.py`, `app/utils/logging.py`: cache per proses/TTL/invalidation dan logging dengan request ID.
 - `templates/`: Jinja auth/pegawai/admin/superadmin; ada CSS/JS khusus halaman.
 - `static/style.css`, `static/app.js`, `static/img/`: UI, JavaScript, brand. Tujuan upload aktif `static/uploads/avatars/`; berbeda dari gambar lama tracked di `app/static/uploads/avatars/`.
@@ -134,7 +134,22 @@ UI Jinja memakai base template serta CSS/JS bersama. Tema warna mengikuti `prefe
 
 Impor openpyxl hanya `.xlsx`, maksimal **5 MB / 500 baris data**; ada validasi duplikat ID/email dan scope perusahaan/project. **Partial success:** baris valid disimpan walau lainnya error. Fee Excel hanya dihormati untuk superadmin; admin biasa memakai default. Siklus impor default B, berbeda dari bootstrap yang default A.
 
-Ekspor manual CSV; scheduler menulis `data/csv/` dan mengirim attachment berisi data pegawai/transaksi. File dan mailbox penerima adalah permukaan data sensitif.
+Form ekspor manual memilih Excel (.xlsx) secara default; CSV tetap tersedia. Excel
+memiliki lebar kolom sesuai isi, wrap text, header tetap, filter, baris berselang,
+serta angka Rupiah dan tanggal bertipe native. Rekening/ID pegawai disimpan sebagai
+teks agar nol depan dan digit panjang tidak hilang; teks pengguna bukan formula.
+URL `/admin/export` dan `/superadmin/export_range` tanpa parameter `format` tetap
+menghasilkan CSV untuk kompatibilitas; tambahkan `format=xlsx` untuk Excel.
+Filter perusahaan superadmin memakai `perusahaan_induk`, bukan kolom project.
+Fee dashboard dihitung dari `admin_fee` tersimpan untuk status `sukses` saja;
+pending/ditolak/dibatalkan tidak masuk pendapatan. Kartu biaya periode mengikuti
+bulan ringkasan berjalan, sedangkan rekap biaya mengikuti bulan pilihan dan
+mencakup semua perusahaan. Default tanggal export dari dashboard mengikuti bulan
+rekap tersebut. Untuk rekonsiliasi XLSX/CSV, jumlahkan kolom Admin pada status
+sukses dengan tanggal dan cakupan perusahaan yang sama, bukan seluruh status.
+Scheduler mengirim attachment XLSX terformat dan tetap menyimpan di direktori lama
+`data/csv/`; nama environment `EXPORT_CSV_ENABLED` dan key `export_csv_last_run`
+tetap dipertahankan. File dan mailbox penerima adalah permukaan data sensitif.
 
 ## 9. Environment dan Startup Aman
 

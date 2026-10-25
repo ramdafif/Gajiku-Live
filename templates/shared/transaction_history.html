@@ -3,7 +3,7 @@
 {% block title %}Riwayat Transaksi{% endblock %}
 {% block breadcrumb %}Riwayat transaksi{% endblock %}
 {% block content %}
-{% call page_heading('TRANSAKSI', 'Riwayat Transaksi', 'Telusuri pengajuan berdasarkan pegawai, waktu, perusahaan, dan status.') %}<button type="button" class="button button-secondary" data-dialog="export-dialog">{{ icon('download') }} Export CSV</button>{% endcall %}
+{% call page_heading('TRANSAKSI', 'Riwayat Transaksi', 'Telusuri pengajuan berdasarkan pegawai, waktu, perusahaan, dan status.') %}<button type="button" class="button button-secondary" data-dialog="export-dialog">{{ icon('download') }} Export Excel</button>{% endcall %}
 <div class="metric-grid metric-grid-three">{{ metric('Nominal hasil filter', total_nom|rupiah, 'Agregat mengikuti perhitungan server', 'wallet', 'accent-blue') }}{{ metric('Biaya admin', total_admin|rupiah, 'Total biaya pada hasil filter', 'receipt') }}{{ metric('Jumlah transaksi', rows|length, 'Sesuai seluruh filter aktif', 'history') }}
 </div>
 <section class="card">

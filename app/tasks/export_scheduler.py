@@ -1,5 +1,3 @@
-import csv
-import io
 import os
 import threading
 import time
@@ -8,7 +6,7 @@ from datetime import date, datetime
 
 from app.db import get_db
 from app.services.security_service import business_today
-from app.utils.spreadsheets import SafeCSVWriter
+from app.utils.spreadsheets import SPREADSHEET_MIMETYPES, build_spreadsheet_bytes
 from app.services.email_service import send_email
 
 
@@ -60,54 +58,23 @@ def _current_period_range():
     return start, end
 
 
-def _build_csv_bytes(rows):
-    buf = io.StringIO()
-    writer = SafeCSVWriter(buf)
-    writer.writerow(
-        [
-            "ID",
-            "Tanggal",
-            "Periode",
-            "ID Pegawai",
-            "Pegawai",
-            "Email",
-            "Perusahaan",
-            "Jabatan",
-            "Tipe Rekening",
-            "No_Rek Bank",
-            "Produk",
-            "Nominal",
-            "Admin",
-            "Status",
-            "Keterangan",
-            "Dibuat",
-        ]
-    )
-    for r in rows:
-        writer.writerow(
-            [
-                r["id"],
-                r["tanggal"],
-                r["periode"],
-                r["id_pegawai"],
-                r["pegawai"],
-                r["email_user"],
-                r["perusahaan"],
-                r["jabatan"],
-                _short_rekening_label(r["rekening_tujuan_label"]),
-                r["no_rekening"],
-                r["product"],
-                r["nominal"],
-                r["admin_fee"],
-                r["status"],
-                r["keterangan"] or "",
-                r["created_at"],
-            ]
-        )
-    return buf.getvalue().encode("utf-8-sig")
+def _build_export_bytes(rows):
+    headers = [
+        "ID", "Tanggal", "Periode", "ID Pegawai", "Pegawai", "Email",
+        "Perusahaan", "Jabatan", "Tipe Rekening", "No_Rek Bank",
+        "Produk", "Nominal", "Admin", "Status", "Keterangan", "Dibuat",
+    ]
+    values = ([
+        row["id"], row["tanggal"], row["periode"], row["id_pegawai"],
+        row["pegawai"], row["email_user"], row["perusahaan"], row["jabatan"],
+        _short_rekening_label(row["rekening_tujuan_label"]), row["no_rekening"],
+        row["product"], row["nominal"], row["admin_fee"], row["status"],
+        row["keterangan"] or "", row["created_at"],
+    ] for row in rows)
+    return build_spreadsheet_bytes(headers, values)
 
 
-def _export_current_period_csv():
+def _export_current_period():
     db = get_db()
     start, end = _current_period_range()
     rows = db.execute(
@@ -129,14 +96,14 @@ def _export_current_period_csv():
         """,
         (start.isoformat(), end.isoformat()),
     ).fetchall()
-    data = _build_csv_bytes(rows)
+    data = _build_export_bytes(rows)
 
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     out_dir = os.path.join(root, "data", "csv")
     os.makedirs(out_dir, exist_ok=True)
     period_label = start.strftime("%Y-%m")
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"export_periode_{period_label}_{stamp}.csv"
+    filename = f"export_periode_{period_label}_{stamp}.xlsx"
     full_path = os.path.join(out_dir, filename)
     with open(full_path, "wb") as f:
         f.write(data)
@@ -175,9 +142,9 @@ def _run_export_job(app):
 def _run_locked_export(app, db):
     if not _should_run(db):
         return
-    filename, full_path, data, start, end, total_rows = _export_current_period_csv()
+    filename, full_path, data, start, end, total_rows = _export_current_period()
     period_label = start.strftime("%Y-%m")
-    subject = f"[Auto Export] CSV Periode {period_label}"
+    subject = f"[Auto Export] Excel Periode {period_label}"
     body = (
         f"Export otomatis periode berjalan.\n"
         f"Periode: {start.isoformat()} s.d {end.isoformat()} (eksklusif)\n"
@@ -191,7 +158,7 @@ def _run_locked_export(app, db):
             {
                 "filename": filename,
                 "content": data,
-                "mimetype": "text/csv",
+                "mimetype": SPREADSHEET_MIMETYPES["xlsx"],
             }
         ],
     )

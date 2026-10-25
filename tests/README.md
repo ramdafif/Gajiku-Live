@@ -39,3 +39,18 @@ Petunjuk pemasangan timer dan monitoring ada di `deploy-company-lifecycle.md`.
 semua role, rekap biaya admin, dan formulir/hasil ekspor. Termasuk pemilihan periode
 historis yang eksplisit, reset/parameter kosong atau tidak valid, cache hangat,
 siklus mingguan/lintas bulan, pergantian bulan/tahun, dan Februari tahun kabisat.
+
+Regresi ekspor memeriksa Excel (.xlsx) sebagai pilihan utama formulir, kompatibilitas
+CSV pada URL lama, lebar kolom/wrap/header/filter, tipe angka dan tanggal, rekening
+berawalan nol, teks non-formula, dan file kosong. Fixture beberapa admin per PT
+memastikan ID transaksi tidak berulang, total nominal tetap benar, filter perusahaan
+memakai perusahaan induk, dan rekap cutoff menghitung setiap pegawai sekali.
+Attachment XLSX scheduler, penundaan run berikutnya setelah sukses, serta retry
+email gagal diuji tanpa menulis file operasional atau menghubungi SMTP.
+
+Rekonsiliasi fee membandingkan kolom Admin transaksi sukses di XLSX/CSV (endpoint
+admin dan superadmin) dengan kartu periode dan rekap bulanan superadmin, termasuk
+REG/URG, batas bulan kalender versus kunci periode mingguan, perubahan setting PPN
+dan fee pegawai, produk legacy NULL, cache hangat, approval, serta export otomatis.
+Fee pending/ditolak/dibatalkan tidak dihitung sebagai pendapatan sukses; sumber
+nominal adalah admin_fee yang sudah tersimpan, bukan dihitung ulang dari setting.

@@ -6,8 +6,8 @@ from openpyxl.styles import Font, PatternFill, Alignment
 from flask import Blueprint, current_app, render_template, request, redirect, url_for, session, flash, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
-import csv, io
-from app.utils.spreadsheets import SafeCSVWriter
+import io
+from app.utils.spreadsheets import SPREADSHEET_MIMETYPES, build_spreadsheet_bytes
 from PIL import Image, ImageOps, UnidentifiedImageError
 import secrets
 import hashlib
@@ -280,13 +280,19 @@ def get_weekly_cutoff_counts(db, where_clause="1=1", where_params=None):
     """Hitung pegawai aktif per hari cutoff untuk dashboard KPI."""
     params = list(where_params or [])
     rows = db.execute(f"""
-        SELECT a.cutoff_hari, COUNT(*) AS total
-        FROM pegawai p
-        JOIN admins a ON LOWER(TRIM(a.company)) = LOWER(TRIM(p.perusahaan_induk))
-        WHERE p.status_aktif=1
-          AND COALESCE(a.cutoff_mingguan_aktif, 0)=1
-          AND {where_clause}
-        GROUP BY a.cutoff_hari
+        SELECT configured.cutoff_hari, COUNT(*) AS total
+        FROM (
+            SELECT (
+                SELECT COALESCE(a.cutoff_hari, 2) FROM admins a
+                WHERE LOWER(TRIM(a.company)) = LOWER(TRIM(p.perusahaan_induk))
+                  AND COALESCE(a.cutoff_mingguan_aktif, 0)=1
+                ORDER BY a.id DESC LIMIT 1
+            ) AS cutoff_hari
+            FROM pegawai p
+            WHERE p.status_aktif=1 AND {where_clause}
+        ) configured
+        WHERE configured.cutoff_hari IS NOT NULL
+        GROUP BY configured.cutoff_hari
     """, params).fetchall()
     return {int(r["cutoff_hari"]): int(r["total"] or 0) for r in rows}
 
@@ -1846,7 +1852,7 @@ def admin_dashboard():
         
     where_clause, where_params = admin_employee_scope(db)
 
-    cache_key = f"admin_kpi:v6:{cache_company_key}:{s_first}:{s_next}:{periode_key}:{trend_start_key}"
+    cache_key = f"admin_kpi:v7:{cache_company_key}:{s_first}:{s_next}:{periode_key}:{trend_start_key}"
     cached_kpi = get_cache(cache_key)
     
     if cached_kpi:
@@ -1938,32 +1944,32 @@ def admin_dashboard():
         if is_super:
             row_fee = db.execute("""
                 SELECT
-                  COALESCE(SUM(CASE WHEN product='reg' THEN admin_fee END), 0) AS fee_reg,
-                  COALESCE(SUM(CASE WHEN product='urg' THEN admin_fee END), 0) AS fee_urg
+                  COALESCE(SUM(CASE WHEN COALESCE(product, 'reg')='reg' THEN admin_fee END), 0) AS fee_reg,
+                  COALESCE(SUM(CASE WHEN product='urg' THEN admin_fee END), 0) AS fee_urg,
+                  COALESCE(SUM(admin_fee), 0) AS fee_total
                 FROM transactions
                 WHERE tanggal >= ?
                   AND tanggal < ?
                   AND status = 'sukses'
-                  AND product IN ('reg', 'urg')
             """, (s_first, s_next)).fetchone()
         else:
             row_fee = db.execute(f"""
                 SELECT
-                  COALESCE(SUM(CASE WHEN t.product='reg' THEN t.admin_fee END), 0) AS fee_reg,
-                  COALESCE(SUM(CASE WHEN t.product='urg' THEN t.admin_fee END), 0) AS fee_urg
+                  COALESCE(SUM(CASE WHEN COALESCE(t.product, 'reg')='reg' THEN t.admin_fee END), 0) AS fee_reg,
+                  COALESCE(SUM(CASE WHEN t.product='urg' THEN t.admin_fee END), 0) AS fee_urg,
+                  COALESCE(SUM(t.admin_fee), 0) AS fee_total
                 FROM transactions t
                 JOIN users u ON u.id = t.user_id
                 JOIN pegawai p ON LOWER(p.email) = LOWER(u.email)
                 WHERE t.tanggal >= ?
                   AND t.tanggal < ?
                   AND t.status = 'sukses'
-                  AND t.product IN ('reg', 'urg')
                   AND {where_clause}
             """, [s_first, s_next] + where_params).fetchone()
 
         admin_fee_reg_total = int(row_fee["fee_reg"] or 0)
         admin_fee_urg_total = int(row_fee["fee_urg"] or 0)
-        admin_fee_total = admin_fee_reg_total + admin_fee_urg_total
+        admin_fee_total = int(row_fee["fee_total"] or 0)
 
         # 5) DATA PERMINTAAN ON-PROSES (PENDING REG & URG) - FIXED VIA TABLE 'users' & LOWER TRIM
         if is_super:
@@ -2428,29 +2434,25 @@ def admin_export():
 
     rows = db.execute(sql, params).fetchall()
 
-    # Buat CSV in-memory (UTF-8-SIG nyaman di Excel)
-    buf = io.StringIO()
-    w = SafeCSVWriter(buf)
-    w.writerow(["ID","Tanggal","Periode","ID Pegawai","Pegawai","Email","Perusahaan","Jabatan","Tipe Rekening","No_Rek Bank",
-                "Produk","Nominal","Admin","Status","Keterangan","Dibuat"])
-    for r in rows:
-        w.writerow([
-            r["id"], r["tanggal"], format_period_label(r["periode"]), r["id_pegawai"], r["pegawai"], r["email_user"],
-            r["perusahaan"], r["jabatan"], short_rekening_label(r["rekening_tujuan_label"]), r["no_rekening"], r["product"], r["nominal"], r["admin_fee"],
-            r["status"], (r["keterangan"] or ""), r["created_at"]
-        ])
-
-    data = buf.getvalue().encode("utf-8-sig")
+    file_format = "xlsx" if request.args.get("format") == "xlsx" else "csv"
+    headers = ["ID","Tanggal","Periode","ID Pegawai","Pegawai","Email","Perusahaan","Jabatan","Tipe Rekening","No_Rek Bank",
+               "Produk","Nominal","Admin","Status","Keterangan","Dibuat"]
+    values = ([
+        row["id"], row["tanggal"], format_period_label(row["periode"]), row["id_pegawai"], row["pegawai"], row["email_user"],
+        row["perusahaan"], row["jabatan"], short_rekening_label(row["rekening_tujuan_label"]), row["no_rekening"], row["product"], row["nominal"], row["admin_fee"],
+        row["status"], (row["keterangan"] or ""), row["created_at"]
+    ] for row in rows)
+    data = build_spreadsheet_bytes(headers, values, file_format)
     from flask import Response
     fname = "export_dana_talangan"
     if periode: fname += f"_{periode}"
     if product: fname += f"_{product}"
     if status:  fname += f"_{status}"
-    fname += ".csv"
+    fname = secure_filename(fname) + f".{file_format}"
 
     return Response(
         data,
-        mimetype="text/csv; charset=utf-8",
+        mimetype=SPREADSHEET_MIMETYPES[file_format],
         headers={"Content-Disposition": f'attachment; filename="{fname}"'}
     )
 
@@ -3282,12 +3284,12 @@ def superadmin_dashboard():
     admin_fee_month = normalize_month_filter(request.args.get("admin_fee_month"))
 
     company_rows = db.execute("""
-        SELECT DISTINCT LOWER(TRIM(perusahaan)) AS company
+        SELECT DISTINCT TRIM(perusahaan_induk) AS company
         FROM pegawai
-        WHERE perusahaan IS NOT NULL AND TRIM(perusahaan) <> ''
+        WHERE perusahaan_induk IS NOT NULL AND TRIM(perusahaan_induk) <> ''
         ORDER BY company
     """).fetchall()
-    companies = [r["company"].title() for r in company_rows if r["company"]]
+    companies = [row["company"] for row in company_rows if row["company"]]
     today = business_today()
 
     admin_email = session.get("admin_email", "").lower() or session.get("email", "").lower()
@@ -3342,7 +3344,7 @@ def superadmin_dashboard():
 
     trend_start = add_months(date(today.year, today.month, 1), -5)
     trend_start_key = trend_start.strftime("%Y-%m")
-    cache_key = f"admin_kpi:v2:{s_first}:{s_next}:{periode_key}:{trend_start_key}"
+    cache_key = f"admin_kpi:v3:{s_first}:{s_next}:{periode_key}:{trend_start_key}"
     cached_kpi = get_cache(cache_key)
     if cached_kpi:
         (
@@ -3407,18 +3409,18 @@ def superadmin_dashboard():
         #     hanya transaksi sukses di rentang tanggal bulan simulasi ---
         row_fee = db.execute("""
             SELECT
-              COALESCE(SUM(CASE WHEN product='reg' THEN admin_fee END), 0) AS fee_reg,
-              COALESCE(SUM(CASE WHEN product='urg' THEN admin_fee END), 0) AS fee_urg
+              COALESCE(SUM(CASE WHEN COALESCE(product, 'reg')='reg' THEN admin_fee END), 0) AS fee_reg,
+              COALESCE(SUM(CASE WHEN product='urg' THEN admin_fee END), 0) AS fee_urg,
+              COALESCE(SUM(admin_fee), 0) AS fee_total
             FROM transactions
             WHERE tanggal >= ?
               AND tanggal < ?
               AND status = 'sukses'
-              AND product IN ('reg', 'urg')
         """, (s_first, s_next)).fetchone()
 
         admin_fee_reg_total  = int(row_fee["fee_reg"] or 0)
         admin_fee_urg_total  = int(row_fee["fee_urg"] or 0)
-        admin_fee_total      = admin_fee_reg_total + admin_fee_urg_total
+        admin_fee_total      = int(row_fee["fee_total"] or 0)
     
         # Jumlah on-proses yang sedang menunggu (tampilkan SEMUA yang masih hidup - tak dibatasi periode,
         # supaya admin selalu melihat antrian real-time lintas siklus)
@@ -3533,7 +3535,7 @@ def superadmin_dashboard():
         )
 
     fee_start, fee_end = month_filter_bounds(date.fromisoformat(admin_fee_month + "-01"))
-    fee_recap_where = "WHERE status IN ('sukses', 'on-proses') AND tanggal >= ? AND tanggal <= ?"
+    fee_recap_where = "WHERE status = 'sukses' AND tanggal >= ? AND tanggal <= ?"
     fee_recap_params = [fee_start.isoformat(), fee_end.isoformat()]
 
     admin_fee_recap_rows = db.execute(f"""
@@ -3698,6 +3700,8 @@ def superadmin_dashboard():
         admin_fee_recap_rows=admin_fee_recap_rows,
         admin_fee_recap_total=admin_fee_recap_total,
         admin_fee_recap_count=admin_fee_recap_count,
+        export_start=fee_start.isoformat(),
+        export_end=fee_end.isoformat(),
         queue_stats=queue_stats,
         enabled_products=enabled_products,
         ppn_enabled=ppn_enabled,
@@ -4361,7 +4365,6 @@ def superadmin_export_range():
           FROM transactions t
           JOIN users u         ON u.id = t.user_id
           LEFT JOIN pegawai p  ON LOWER(p.email) = LOWER(u.email)
-          LEFT JOIN admins a ON LOWER(TRIM(a.company)) = LOWER(TRIM(p.perusahaan_induk))
           WHERE t.tanggal >= ? AND t.tanggal <= ?
     """
     params = [start_dt.isoformat(), end_dt.isoformat()]
@@ -4369,32 +4372,34 @@ def superadmin_export_range():
     weekly_siklus = None
     if siklus.startswith("W") and siklus[1:].isdigit() and int(siklus[1:]) in range(7):
         weekly_siklus = int(siklus[1:])
-        sql += " AND COALESCE(a.cutoff_mingguan_aktif, 0)=1 AND a.cutoff_hari = ?"
+        sql += """ AND (
+            SELECT COALESCE(a.cutoff_hari, 2) FROM admins a
+            WHERE LOWER(TRIM(a.company)) = LOWER(TRIM(p.perusahaan_induk))
+              AND COALESCE(a.cutoff_mingguan_aktif, 0)=1
+            ORDER BY a.id DESC LIMIT 1
+        ) = ?"""
         params.append(weekly_siklus)
     elif siklus in VALID_SIKLUS:
         sql += " AND COALESCE(p.siklus_gaji,'A') = ?"
         params.append(siklus)
 
     if company:
-        sql += " AND LOWER(TRIM(COALESCE(p.perusahaan,''))) = ?"
+        sql += " AND LOWER(TRIM(COALESCE(p.perusahaan_induk,''))) = ?"
         params.append(company.lower())
 
     sql += " ORDER BY t.tanggal DESC, t.id DESC"
 
     rows = get_db().execute(sql, params).fetchall()
 
-    buf = io.StringIO()
-    w = SafeCSVWriter(buf)
-    w.writerow(["ID","Tanggal","Periode","ID Pegawai","Pegawai","Email","Perusahaan","Jabatan","Tipe Rekening","No_Rek Bank","Siklus",
-                "Produk","Nominal","Admin","Status","Keterangan","Dibuat"])
-    for r in rows:
-        w.writerow([
-            r["id"], format_ddmmyyyy(r["tanggal"]), format_period_label(r["periode"]), r["id_pegawai"], r["pegawai"], r["email_user"],
-            r["perusahaan"], r["jabatan"], short_rekening_label(r["rekening_tujuan_label"]), r["no_rekening"], r["siklus"], r["product"], r["nominal"],
-            r["admin_fee"], r["status"], (r["keterangan"] or ""), format_created_at(r["created_at"])
-        ])
-
-    data = buf.getvalue().encode("utf-8-sig")
+    file_format = "xlsx" if request.args.get("format") == "xlsx" else "csv"
+    headers = ["ID","Tanggal","Periode","ID Pegawai","Pegawai","Email","Perusahaan","Jabatan","Tipe Rekening","No_Rek Bank","Siklus",
+               "Produk","Nominal","Admin","Status","Keterangan","Dibuat"]
+    values = ([
+        row["id"], format_ddmmyyyy(row["tanggal"]), format_period_label(row["periode"]), row["id_pegawai"], row["pegawai"], row["email_user"],
+        row["perusahaan"], row["jabatan"], short_rekening_label(row["rekening_tujuan_label"]), row["no_rekening"], row["siklus"], row["product"], row["nominal"],
+        row["admin_fee"], row["status"], (row["keterangan"] or ""), format_created_at(row["created_at"])
+    ] for row in rows)
+    data = build_spreadsheet_bytes(headers, values, file_format)
     from flask import Response
     fname = f"export_dana_talangan_{start_dt.strftime('%d-%m-%Y')}_to_{end_dt.strftime('%d-%m-%Y')}"
     if company:
@@ -4402,11 +4407,11 @@ def superadmin_export_range():
         fname += f"_company_{safe_company}"
     if siklus in VALID_SIKLUS or weekly_siklus is not None:
         fname += f"_siklus_{siklus}"
-    fname += ".csv"
+    fname = secure_filename(fname) + f".{file_format}"
 
     return Response(
         data,
-        mimetype="text/csv; charset=utf-8",
+        mimetype=SPREADSHEET_MIMETYPES[file_format],
         headers={"Content-Disposition": f'attachment; filename="{fname}"'}
     )
 

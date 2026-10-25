@@ -13,7 +13,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import mock_open, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -25,6 +25,7 @@ from app.routes import web
 from app.services import email_service
 from app.services.security_service import business_today, token_serializer, credential_version
 from app.utils.cache import _cache
+from app.utils.spreadsheets import SPREADSHEET_MIMETYPES, build_spreadsheet_bytes
 from openpyxl import Workbook, load_workbook
 from werkzeug.security import generate_password_hash, check_password_hash
 
@@ -268,6 +269,185 @@ class AuditRegression(unittest.TestCase):
         self.login()
         rows=list(csv.reader(io.StringIO(self.client.get('/admin/export').get_data(as_text=True).lstrip('\ufeff'))))
         self.assertTrue(any("'=1+1" in row for row in rows))
+
+    def export_rows(self, response, file_format):
+        self.assertEqual(response.status_code, 200)
+        if file_format == 'csv':
+            return list(csv.DictReader(io.StringIO(response.data.decode('utf-8-sig'))))
+        workbook = load_workbook(io.BytesIO(response.data))
+        rows = list(workbook.active.values)
+        workbook.close()
+        return [dict(zip(rows[0], row)) for row in rows[1:]]
+
+    def test_export_forms_prefer_excel(self):
+        for email, paths in (
+            ('admin@example.com', ('/admin/dashboard', '/admin/riwayat')),
+            ('super@fixture.test', ('/superadmin/dashboard', '/superadmin/riwayat')),
+        ):
+            self.login(email)
+            for path in paths:
+                response = self.client.get(path)
+                self.assertEqual(response.status_code, 200)
+                html = response.get_data(as_text=True)
+                self.assertIn('name="format"', html)
+                self.assertIn('<option value="xlsx" selected>', html)
+                self.assertIn('<option value="csv">', html)
+
+    def test_admin_excel_export_layout_types_and_tenant_isolation(self):
+        self.query("UPDATE users SET name='=1+1' WHERE id=1")
+        self.query("UPDATE pegawai SET id_pegawai='0000123' WHERE id=1")
+        self.query("UPDATE transactions SET rekening_tujuan=?, keterangan=? WHERE user_id=1",
+                   ('000012345678901234567', 'Keterangan transaksi panjang ' * 12))
+        self.login()
+        response = self.client.get('/admin/export?format=xlsx&periode=all')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, SPREADSHEET_MIMETYPES['xlsx'])
+        self.assertIn('.xlsx', response.headers['Content-Disposition'])
+        workbook = load_workbook(io.BytesIO(response.data))
+        sheet = workbook.active
+        self.assertEqual(sheet.freeze_panes, 'A2')
+        self.assertFalse(sheet.sheet_view.showGridLines)
+        self.assertIsNone(sheet.auto_filter.ref)
+        self.assertEqual(sheet.tables['TransaksiExport'].ref, 'A1:P3')
+        self.assertEqual(sheet.tables['TransaksiExport'].autoFilter.ref, 'A1:P3')
+        self.assertTrue(sheet['A1'].font.bold)
+        columns = {cell.value: cell.column for cell in sheet[1]}
+        rows = list(sheet.values)[1:]
+        self.assertEqual({row[0] for row in rows}, {1, 11})
+        self.assertEqual(sum(row[columns['Nominal'] - 1] for row in rows), 20000)
+        for row_index in range(2, sheet.max_row + 1):
+            employee = sheet.cell(row_index, columns['Pegawai'])
+            account = sheet.cell(row_index, columns['No_Rek Bank'])
+            self.assertEqual(employee.value, '=1+1')
+            self.assertEqual(employee.data_type, 's')
+            self.assertEqual(account.value, '000012345678901234567')
+            self.assertEqual(account.number_format, '@')
+            self.assertEqual(sheet.cell(row_index, columns['ID Pegawai']).value, '0000123')
+            self.assertIsInstance(sheet.cell(row_index, columns['Tanggal']).value, datetime)
+            self.assertIsInstance(sheet.cell(row_index, columns['Dibuat']).value, datetime)
+            self.assertEqual(sheet.cell(row_index, columns['Nominal']).data_type, 'n')
+            self.assertIn('Rp', sheet.cell(row_index, columns['Nominal']).number_format)
+            self.assertTrue(sheet.cell(row_index, columns['Keterangan']).alignment.wrap_text)
+            self.assertGreater(sheet.row_dimensions[row_index].height, 22)
+        self.assertGreaterEqual(sheet.column_dimensions['J'].width, 23)
+        self.assertLessEqual(sheet.column_dimensions['O'].width, 60)
+        self.assertFalse(any(cell.data_type == 'f' for row in sheet for cell in row))
+        workbook.close()
+
+    def test_superadmin_exports_do_not_duplicate_transactions(self):
+        self.query("UPDATE admins SET cutoff_mingguan_aktif=1, cutoff_hari=2 WHERE company=?",
+                   ('Fixture PT One',))
+        self.query("UPDATE transactions SET product='reg' WHERE id=11")
+        self.login('super@fixture.test')
+        for file_format in ('csv', 'xlsx'):
+            for cycle, expected in (('all', {1, 2, 11, 12}), ('A', {1, 2, 11, 12}), ('W2', {1, 11})):
+                with self.subTest(file_format=file_format, cycle=cycle):
+                    response = self.client.get('/superadmin/export_range', query_string={
+                        'start': TODAY, 'end': TODAY, 'format': file_format, 'siklus': cycle,
+                    })
+                    rows = self.export_rows(response, file_format)
+                    self.assertEqual(len(rows), len(expected))
+                    self.assertEqual({int(row['ID']) for row in rows}, expected)
+                    self.assertEqual(sum(int(row['Nominal']) for row in rows), 10000 * len(expected))
+
+    def test_admin_excel_export_filters_product_and_status(self):
+        self.query("UPDATE transactions SET status='sukses' WHERE product='urg'")
+        self.login()
+        for product, expected in (('urg', {11}), ('reg', set())):
+            response = self.client.get('/admin/export', query_string={
+                'format': 'xlsx', 'periode': 'all', 'product': product, 'status': 'sukses',
+            })
+            rows = self.export_rows(response, 'xlsx')
+            self.assertEqual({row['ID'] for row in rows}, expected)
+
+    def test_superadmin_export_company_filter_uses_parent(self):
+        self.login('super@fixture.test')
+        for file_format in ('csv', 'xlsx'):
+            for company, expected in (('  fixture pt ONE  ', {1, 11}), ('Fixture PT Two', {2, 12}),
+                                      ('Unknown PT', set())):
+                response = self.client.get('/superadmin/export_range', query_string={
+                    'start': TODAY, 'end': TODAY, 'format': file_format, 'company': company,
+                })
+                rows = self.export_rows(response, file_format)
+                self.assertEqual({int(row['ID']) for row in rows}, expected)
+                self.assertEqual(len(rows), len(expected))
+
+    def test_weekly_cutoff_counts_each_employee_once(self):
+        self.query("UPDATE admins SET cutoff_mingguan_aktif=1, cutoff_hari=2 WHERE company=?",
+                   ('Fixture PT One',))
+        with self.app.app_context():
+            self.assertEqual(web.get_weekly_cutoff_counts(get_db()), {2: 2})
+        self.query('UPDATE admins SET cutoff_hari=4 WHERE id=4')
+        with self.app.app_context():
+            self.assertEqual(web.get_weekly_cutoff_counts(get_db()), {4: 2})
+            self.assertEqual(web.get_weekly_cutoff_config('Fixture PT One')['cutoff_hari'], 4)
+            self.assertEqual(web.get_weekly_cutoff_counts(
+                get_db(), 'p.perusahaan_induk=?', ['Fixture PT Two']), {})
+        self.login('super@fixture.test')
+        for cycle, expected in (('W2', set()), ('W4', {1, 11})):
+            response = self.client.get('/superadmin/export_range', query_string={
+                'start': TODAY, 'end': TODAY, 'format': 'xlsx', 'siklus': cycle,
+            })
+            self.assertEqual({row['ID'] for row in self.export_rows(response, 'xlsx')}, expected)
+
+    def test_unassigned_admin_excel_export_is_empty(self):
+        self.login('empty@fixture.test')
+        response = self.client.get('/admin/export?format=xlsx&periode=all')
+        self.assertEqual(self.export_rows(response, 'xlsx'), [])
+        workbook = load_workbook(io.BytesIO(response.data))
+        self.assertEqual(workbook.active.max_row, 1)
+        self.assertEqual(workbook.active.auto_filter.ref, 'A1:P1')
+        self.assertEqual(len(workbook.active.tables), 0)
+        workbook.close()
+
+    def test_excel_text_cannot_become_formulas(self):
+        payloads = ['=1+1', '+123', '-123', '@SUM(A1)', '\t=1+1', 'Nama\x00Aman']
+        data = build_spreadsheet_bytes(['Pegawai', 'No_Rek Bank', 'Nominal'],
+                                       ([payload, '001234567890123456789', 0] for payload in payloads))
+        workbook = load_workbook(io.BytesIO(data))
+        for row, payload in zip(workbook.active.iter_rows(min_row=2), payloads):
+            self.assertEqual(row[0].value, payload.replace('\x00', ''))
+            self.assertEqual(row[0].data_type, 's')
+            self.assertEqual(row[1].value, '001234567890123456789')
+            self.assertEqual(row[1].data_type, 's')
+            self.assertEqual(row[2].value, 0)
+            self.assertEqual(row[2].data_type, 'n')
+        workbook.close()
+
+    def test_automatic_export_sends_formatted_excel_once(self):
+        from app.tasks import export_scheduler
+        file_writer = mock_open()
+        with patch.object(export_scheduler, 'open', file_writer, create=True), \
+             patch.object(export_scheduler.os, 'makedirs'), \
+             patch.object(export_scheduler, 'send_email', return_value=True) as send:
+            export_scheduler._run_export_job(self.app)
+            export_scheduler._run_export_job(self.app)
+        self.assertEqual(send.call_count, 1)
+        attachment = send.call_args.kwargs['attachments'][0]
+        self.assertTrue(attachment['filename'].endswith('.xlsx'))
+        self.assertEqual(attachment['mimetype'], SPREADSHEET_MIMETYPES['xlsx'])
+        self.assertEqual(file_writer().write.call_args.args[0], attachment['content'])
+        workbook = load_workbook(io.BytesIO(attachment['content']))
+        sheet = workbook.active
+        self.assertEqual(sheet.freeze_panes, 'A2')
+        self.assertEqual({row[0] for row in list(sheet.values)[1:]}, {1, 2, 11, 12})
+        self.assertEqual(sheet.max_row, 5)
+        self.assertEqual(sheet['L2'].data_type, 'n')
+        workbook.close()
+        self.assertEqual(len(self.query('SELECT value FROM app_settings WHERE key=?',
+                                        (export_scheduler.LAST_RUN_KEY,))), 1)
+
+    def test_automatic_excel_export_retries_failed_email(self):
+        from app.tasks import export_scheduler
+        with patch.object(export_scheduler, 'open', mock_open(), create=True), \
+             patch.object(export_scheduler.os, 'makedirs'), \
+             patch.object(export_scheduler, 'send_email', side_effect=[False, True]) as send:
+            export_scheduler._run_export_job(self.app)
+            self.assertEqual(self.query('SELECT value FROM app_settings WHERE key=?',
+                                         (export_scheduler.LAST_RUN_KEY,)), [])
+            export_scheduler._run_export_job(self.app)
+            export_scheduler._run_export_job(self.app)
+        self.assertEqual(send.call_count, 2)
     def test_employee_financial_history_cannot_be_deleted(self):
         self.login()
         self.post('/admin/pegawai/1/delete')
