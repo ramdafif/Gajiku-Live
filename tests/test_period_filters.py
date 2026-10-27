@@ -318,7 +318,7 @@ def test_employee_other_periods_require_explicit_selection(period_harness):
 
 
 def test_weekly_employee_still_defaults_to_calendar_month(period_harness):
-    period_harness.query("UPDATE admins SET cutoff_mingguan_aktif=1, cutoff_hari=2 WHERE id=2")
+    period_harness.query("UPDATE clients SET cutoff_mingguan_aktif=1, cutoff_hari=2 WHERE id=1")
     for transaction in period_harness.query("SELECT id,tanggal FROM transactions WHERE user_id=1"):
         period = web.weekly_period_key(date.fromisoformat(transaction["tanggal"]), 2)
         period_harness.query("UPDATE transactions SET periode=? WHERE id=?", (period, transaction["id"]))

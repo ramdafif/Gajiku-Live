@@ -1,6 +1,6 @@
 {% from 'components/macros.html' import icon with context %}
 <dialog id="export-dialog" class="dialog" aria-labelledby="export-title">
-  <div class="dialog-header"><h2 id="export-title">Export transaksi Excel</h2><button type="button" class="icon-button" data-close-dialog aria-label="Tutup">{{ icon('close') }}</button></div>
+  <div class="dialog-header"><h2 id="export-title">Ekspor kustom</h2><button type="button" class="icon-button" data-close-dialog aria-label="Tutup">{{ icon('close') }}</button></div>
   <p>Ekspor mengikuti pilihan pada formulir ini, terpisah dari filter tabel riwayat.</p>
   <p class="field-hint">Untuk mencocokkan biaya admin dashboard, jumlahkan kolom Admin hanya pada transaksi berstatus sukses, dengan rentang tanggal dan cakupan perusahaan yang sama. Transaksi diproses, ditolak, dan dibatalkan bukan pendapatan sukses.</p>
   <form action="{{ url_for('web.superadmin_export_range' if superuser else 'web.admin_export') }}" method="get" class="form-grid mt-24"{% if superuser %} data-date-range{% endif %}>

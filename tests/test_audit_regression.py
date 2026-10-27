@@ -336,7 +336,7 @@ class AuditRegression(unittest.TestCase):
         workbook.close()
 
     def test_superadmin_exports_do_not_duplicate_transactions(self):
-        self.query("UPDATE admins SET cutoff_mingguan_aktif=1, cutoff_hari=2 WHERE company=?",
+        self.query("UPDATE clients SET cutoff_mingguan_aktif=1, cutoff_hari=2 WHERE name=?",
                    ('Fixture PT One',))
         self.query("UPDATE transactions SET product='reg' WHERE id=11")
         self.login('super@fixture.test')
@@ -374,11 +374,12 @@ class AuditRegression(unittest.TestCase):
                 self.assertEqual(len(rows), len(expected))
 
     def test_weekly_cutoff_counts_each_employee_once(self):
-        self.query("UPDATE admins SET cutoff_mingguan_aktif=1, cutoff_hari=2 WHERE company=?",
+        self.query("UPDATE clients SET cutoff_mingguan_aktif=1, cutoff_hari=2 WHERE name=?",
                    ('Fixture PT One',))
         with self.app.app_context():
             self.assertEqual(web.get_weekly_cutoff_counts(get_db()), {2: 2})
-        self.query('UPDATE admins SET cutoff_hari=4 WHERE id=4')
+        self.query('UPDATE admins SET cutoff_hari=6 WHERE id=4')
+        self.query('UPDATE clients SET cutoff_hari=4 WHERE id=1')
         with self.app.app_context():
             self.assertEqual(web.get_weekly_cutoff_counts(get_db()), {4: 2})
             self.assertEqual(web.get_weekly_cutoff_config('Fixture PT One')['cutoff_hari'], 4)
@@ -471,7 +472,7 @@ class AuditRegression(unittest.TestCase):
         self.assertEqual(self.query('SELECT password_hash FROM admins WHERE id=1')[0]['password_hash'],old)
     def test_ppn_products_and_admin_status_create(self):
         self.login('super@fixture.test')
-        self.post('/superadmin/settings',{'form_type':'ppn','ppn_enabled':'0'})
+        self.post('/superadmin/system-settings',{'section':'ppn','ppn_enabled':'0','settings_version':'1'})
         self.assertEqual(self.query("SELECT value FROM app_settings WHERE key='ppn_enabled'")[0]['value'],'0')
         self.post('/superadmin/admins/add',{'nama':'New Admin','email':'newadmin@fixture.test','password':PASSWORD,'perusahaan':'Fixture PT One','status':'0','cutoff_hari':'2','produk_reg_aktif':'1'})
         self.assertEqual(self.query("SELECT status_aktif FROM admins WHERE email='newadmin@fixture.test'")[0]['status_aktif'],0)
@@ -492,7 +493,7 @@ class AuditRegression(unittest.TestCase):
         self.login()
         response=self.client.get('/admin/pegawai/import/template')
         workbook=load_workbook(io.BytesIO(response.data))
-        self.assertEqual(workbook.active.max_column,14)
+        self.assertEqual(workbook.active.max_column,15)
         workbook.close()
         workbook=Workbook()
         workbook.active.append(['ID','Nama','Email','Jabatan','Project','Rek','Rek2','EW','Telp','Gaji','Status','Siklus','Fee','Perusahaan'])
@@ -546,15 +547,13 @@ class AuditRegression(unittest.TestCase):
     def test_company_regular_limit_update_preserve_and_reset(self):
         self.login('super@fixture.test')
         transactions = self.query('SELECT * FROM transactions ORDER BY id')
-        data = {'name': 'Fixture PT One', 'allow_projects': '1', 'reg_withdrawal_max': '2000000'}
-        self.post('/superadmin/clients/1', data)
+        self.assertEqual(self.post('/superadmin/clients/1', {'section': 'reg_limit', 'policy_version': '1',
+                                                           'reg_withdrawal_max': '2000000'}).status_code, 302)
         self.assertEqual(self.query('SELECT reg_withdrawal_max FROM clients ORDER BY id'),
                          [{'reg_withdrawal_max': 2000000}, {'reg_withdrawal_max': 1000000}])
-        del data['reg_withdrawal_max']
-        self.post('/superadmin/clients/1', data)
+        self.post('/superadmin/clients/1', {'name': 'Fixture PT One', 'allow_projects': '1', 'policy_version': '2'})
         self.assertEqual(self.query('SELECT reg_withdrawal_max FROM clients WHERE id=1')[0]['reg_withdrawal_max'], 2000000)
-        data['reg_withdrawal_max'] = '1000000'
-        self.post('/superadmin/clients/1', data)
+        self.post('/superadmin/clients/1', {'section': 'reg_limit', 'policy_version': '3', 'reg_withdrawal_max': '1000000'})
         self.assertEqual(self.query('SELECT reg_withdrawal_max FROM clients WHERE id=1')[0]['reg_withdrawal_max'], 1000000)
         self.assertEqual(self.query('SELECT * FROM transactions ORDER BY id'), transactions)
 
@@ -565,7 +564,7 @@ class AuditRegression(unittest.TestCase):
                     'abc', '1e6', '2147483648', '9' * 100, '\u0661'):
             with self.subTest(raw=raw):
                 self.post('/superadmin/clients/1', {'name': 'Fixture PT One', 'allow_projects': '1',
-                                                  'reg_withdrawal_max': raw})
+                                                  'reg_withdrawal_max': raw, 'section': 'reg_limit', 'policy_version': '1'})
                 self.assertEqual(self.query('SELECT reg_withdrawal_max FROM clients WHERE id=1')[0]['reg_withdrawal_max'], 2000000)
                 self.post('/superadmin/clients', {'name': 'Invalid Limit PT', 'reg_withdrawal_max': raw})
                 self.assertEqual(self.query("SELECT COUNT(*) AS total FROM clients WHERE name='Invalid Limit PT'")[0]['total'], 0)
@@ -656,7 +655,7 @@ class AuditRegression(unittest.TestCase):
         data = self.withdrawal_data()
         superadmin = self.app.test_client()
         self.login('super@fixture.test', superadmin)
-        company_data = {'name': 'Fixture PT One', 'allow_projects': '1', 'reg_withdrawal_max': '500000'}
+        company_data = {'section': 'reg_limit', 'policy_version': '1', 'reg_withdrawal_max': '500000'}
         self.post('/superadmin/clients/1', company_data, superadmin)
         data['nominal'] = '1000000'
         response = self.post('/tarik-gaji', data)
@@ -664,6 +663,7 @@ class AuditRegression(unittest.TestCase):
         self.assertEqual(self.query('SELECT COUNT(*) AS total FROM transactions')[0]['total'], 0)
         data = self.withdrawal_data()
         company_data['reg_withdrawal_max'] = '2000000'
+        company_data['policy_version'] = '2'
         self.post('/superadmin/clients/1', company_data, superadmin)
         data['nominal'] = '1500000'
         self.assertEqual(self.post('/tarik-gaji', data).status_code, 302)

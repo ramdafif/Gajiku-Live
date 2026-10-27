@@ -44,35 +44,6 @@
       <small>Izinkan admin menyetujui atau menolak pengajuan dalam cakupan perusahaan. Tidak aktif secara default untuk akun baru.</small>
     </span>
   </label>
-  <h3 class="form-section-title">Konfigurasi perusahaan</h3>
-  <label class="check-row field-full">
-    <input name="cutoff_mingguan_aktif" value="1" type="checkbox"{% if record and record.cutoff_mingguan_aktif %} checked{% endif %}>
-    <span>
-      <strong>Gunakan cutoff mingguan</strong>
-      <small>Konfigurasi perusahaan mengikuti hasil validasi dan sinkronisasi server.</small>
-    </span>
-  </label>
-  <div class="field field-full">
-    <label for="{{ prefix }}-cutoff">Hari cutoff</label>
-    <select id="{{ prefix }}-cutoff" name="cutoff_hari">
-      {% for day in ['Senin','Selasa','Rabu','Kamis','Jumat','Sabtu','Minggu'] %}
-      <option value="{{ loop.index0 }}"{% if (record and record.cutoff_hari == loop.index0) or (not record and loop.index0 == 2) %} selected{% endif %}>{{ day }}</option>
-      {% endfor %}
-    </select>
-  </div>
-  <label class="check-row">
-    <input name="produk_reg_aktif" value="1" type="checkbox"{% if not record or record.produk_reg_aktif %} checked{% endif %}>
-    <span>
-      <strong>Reguler (REG)</strong>
-      <small>Akses dari saldo harian.</small>
-    </span>
-  </label>
-  <label class="check-row">
-    <input name="produk_urg_aktif" value="1" type="checkbox"{% if not record or record.produk_urg_aktif %} checked{% endif %}>
-    <span>
-      <strong>Urgent (URG)</strong>
-      <small>Akses dari sisa plafon.</small>
-    </span>
-  </label>
+  <p class="field-hint field-full">Kebijakan cutoff dan produk hanya di Kelola Perusahaan.</p>
 </div>
 {% endmacro %}

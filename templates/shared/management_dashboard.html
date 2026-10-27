@@ -10,10 +10,10 @@
 {% set approval_count = pending_admin_count|default(0) %}
 {% endif %}
 {% call page_heading('SUPERADMIN' if superuser else 'ADMIN', 'Dashboard ' ~ ('Superadmin' if superuser else 'Admin'), 'Pantau pengajuan, pegawai, dan transaksi.') %}{% if superuser %}
-<button type="button" class="button button-secondary" data-dialog="products-dialog">{{ icon('settings') }} Kelola produk</button>
-<button type="button" class="button button-primary" data-dialog="export-dialog">{{ icon('download') }} Export Excel</button>
+<a class="button button-secondary" href="{{ url_for('web.superadmin_system_settings') }}">{{ icon('settings') }} Pengaturan sistem</a>
+<button type="button" class="button button-primary" data-dialog="export-dialog">{{ icon('download') }} Ekspor kustom</button>
 {% else %}
-<button type="button" class="button button-secondary" data-dialog="export-dialog">{{ icon('download') }} Export Excel</button>
+<button type="button" class="button button-secondary" data-dialog="export-dialog">{{ icon('download') }} Ekspor kustom</button>
 {% endif %}{% endcall %}
 <section class="overview-banner mb-24">
   <div>
@@ -25,17 +25,17 @@
   <div class="overview-side">
     <span class="overview-stat">
       <b>{{ pending_count|default(0) }}</b>
-      <span>Pengajuan diproses</span>
+      <span>Pengajuan diproses{{ " dalam ringkasan" if superuser else "" }}</span>
     </span>
     <span class="overview-stat">
       <b>{{ approval_count }}</b>
-      <span>Menunggu approval</span>
+      <span>Menunggu approval{{ " lintas perusahaan" if superuser else "" }}</span>
     </span>
     <a href="#antrean-reg" class="button button-white button-small">Periksa antrean {{ icon('arrow-right') }}</a>
   </div>
 </section>
 {% if superuser %}
-<div class="notice notice-info mb-24">{{ icon('info') }}<span>Antrean dan aktivitas terbaru menampilkan lintas perusahaan. Finalisasi hanya mencatat status aplikasi, bukan mengirim uang ke rekening.</span>
+<div class="notice notice-info mb-24">{{ icon('info') }}<span>Filter perusahaan berlaku untuk ringkasan, grafik, dan rekap biaya. Antrean approval serta aktivitas terbaru tetap lintas perusahaan. Finalisasi hanya mencatat status aplikasi, bukan mengirim uang ke rekening.</span>
 </div>
 {% endif %}
 {% include 'components/approval_queue.html' %}
@@ -48,8 +48,10 @@
   <form method="get" class="inline wrap compact-filter">
     <div class="field">
       <label for="dashboard-company" class="sr-only">Perusahaan untuk ringkasan</label>
+      <input type="hidden" name="admin_fee_month" value="{{ admin_fee_month }}">
       <select id="dashboard-company" name="company">
         <option value="">Semua perusahaan</option>
+        {% if company_selected and company_selected not in companies %}<option value="{{ company_selected }}" selected>{{ company_selected }} (tidak ditemukan)</option>{% endif %}
         {% for company in companies|default([]) %}
         <option value="{{ company }}"{% if company == company_selected %} selected{% endif %}>{{ company }}</option>
         {% endfor %}
@@ -119,7 +121,7 @@
     <div class="card-header">
       <div>
         <h2>Distribusi skema gaji</h2>
-        <p>Jumlah pegawai pada setiap siklus.</p>
+        <p>Skema efektif pegawai aktif. Siklus bulanan A-D tidak menghitung pegawai mingguan; fallback tetap disimpan di data pegawai.</p>
       </div>{{ icon('calendar') }}</div>
     <div class="card-body">
       <div class="cycle-grid">

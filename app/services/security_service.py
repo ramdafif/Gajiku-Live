@@ -182,7 +182,9 @@ def serialized_withdrawal(function):
         try:
             if isinstance(db, sqlite3.Connection):
                 db.execute("BEGIN IMMEDIATE")
-            else:
+            from app.services.company_policy import lock_policy
+            lock_policy(db)
+            if not isinstance(db, sqlite3.Connection):
                 db.execute("""SELECT p.id FROM pegawai p JOIN users u ON LOWER(p.email)=LOWER(u.email)
                     WHERE u.id=? FOR UPDATE""", (session["user_id"],)).fetchall()
             key = withdrawal_key(request.form.get("request_token"))

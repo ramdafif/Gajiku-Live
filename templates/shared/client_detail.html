@@ -12,6 +12,48 @@
 {% endif %}{% if client.allow_projects %}
 <button type="button" class="button button-primary" data-dialog="project-add">{{ icon('plus') }} Tambah project</button>
 {% endif %}{% endcall %}
+{% if superuser %}
+<section class="card mb-24">
+  <div class="card-header"><h2>Kebijakan perusahaan</h2><p>Setiap bagian disimpan terpisah. Batas REG tidak mengubah cutoff atau pemakaian.</p></div>
+  <div class="card-body">
+    <form method="post" class="form-grid">
+      {{ csrf() }}<input type="hidden" name="section" value="reg_limit"><input type="hidden" name="policy_version" value="{{ client.policy_version }}">
+      <div class="field field-full">
+        <label for="company-reg-max">Maksimal penarikan reguler per transaksi (Rp)</label>
+        <input id="company-reg-max" name="reg_withdrawal_max" type="number" min="1" max="2147483647" step="1" required value="{{ policy_draft.get('reg_withdrawal_max', client.reg_withdrawal_max) }}">
+        <p class="field-hint">Default untuk karyawan yang mengikuti perusahaan. Saldo REG tetap membatasi pengajuan. Batas khusus tidak berubah.</p>
+        {% if overrides %}
+        <details><summary class="text-link">! {{ overrides|length }} karyawan menggunakan batas khusus</summary>
+          <div class="table-scroll" tabindex="0" role="region" aria-label="Karyawan dengan batas khusus"><table class="data-table">
+            <thead><tr><th>Karyawan / ID</th><th>Project</th><th>Batas khusus REG</th><th>Status pribadi</th></tr></thead>
+            <tbody>{% for employee in overrides %}<tr><td>{{ employee.nama }}<small>{{ employee.id_pegawai }}</small></td><td>{{ employee.perusahaan or '-' }}</td><td>{{ employee.reg_withdrawal_max_override|rupiah }}</td><td>{{ 'Aktif' if employee.status_aktif else 'Tidak aktif' }}</td></tr>{% endfor %}</tbody>
+          </table></div>
+          <a class="text-link" href="{{ url_for('web.admin_pegawai', client=client.name) }}">Ubah melalui Kelola Pegawai perusahaan ini</a>
+        </details>
+        {% else %}<p class="field-hint">Semua karyawan mengikuti batas perusahaan.</p>{% endif %}
+      </div>
+      <div class="field field-full"><button class="button button-primary" type="submit">Simpan batas REG</button></div>
+    </form>
+    <hr>
+    <form method="post" class="form-grid">
+      {{ csrf() }}<input type="hidden" name="section" value="cutoff"><input type="hidden" name="policy_version" value="{{ client.policy_version }}">
+      <div class="field"><label for="company-cutoff-mode">Skema cutoff efektif</label><select id="company-cutoff-mode" name="cutoff_mingguan_aktif">
+        {% for value,label in [('0','Bulanan - mengikuti siklus gaji karyawan'),('1','Mingguan')] %}<option value="{{ value }}"{% if policy_draft.get('cutoff_mingguan_aktif', client.cutoff_mingguan_aktif)|string == value %} selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select></div>
+      <div class="field"><label for="company-cutoff-day">Hari cutoff mingguan</label><select id="company-cutoff-day" name="cutoff_hari">
+        {% for day in ['Senin','Selasa','Rabu','Kamis','Jumat','Sabtu','Minggu'] %}<option value="{{ loop.index0 }}"{% if policy_draft.get('cutoff_hari', client.cutoff_hari)|int == loop.index0 %} selected{% endif %}>{{ day }}</option>{% endfor %}
+      </select><p class="field-hint">Periode dimulai sehari setelah cutoff. Siklus bulanan karyawan tetap disimpan sebagai fallback. Perubahan ditolak jika ada pengajuan pending atau transaksi selesai dalam periode terdampak.</p></div>
+      <div class="field field-full"><button class="button button-secondary" type="submit">Simpan cutoff saja</button></div>
+    </form>
+    <hr>
+    <form method="post" class="form-grid">
+      {{ csrf() }}<input type="hidden" name="section" value="products"><input type="hidden" name="policy_version" value="{{ client.policy_version }}">
+      {% for field,label in [('produk_reg_aktif','REG perusahaan'),('produk_urg_aktif','URG perusahaan')] %}<div class="field"><label for="company-{{ field }}">{{ label }}</label><select id="company-{{ field }}" name="{{ field }}">{% for value,label in [('1','Aktif'),('0','Nonaktif')] %}<option value="{{ value }}"{% if policy_draft.get(field, client[field])|string == value %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>{% endfor %}
+      <div class="field field-full"><p class="field-hint">Produk tersedia juga mengikuti Pengaturan Sistem global. Menonaktifkan keduanya menutup pengajuan baru, tanpa mengubah transaksi existing.</p><button class="button button-secondary" type="submit">Simpan produk perusahaan saja</button></div>
+    </form>
+  </div>
+</section>
+{% endif %}
 <div class="client-overview mb-24">
   <section class="card">
     <div class="card-header">

@@ -25,7 +25,7 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='pages.css') }}?v=20261019-theme">
     <link rel="stylesheet" href="{{ url_for('static', filename='responsive.css') }}?v=20261019-theme">
     <script src="{{ url_for('static', filename='scrollbars.js') }}?v=20261017-scrollbars-overlay" defer></script>
-    <script src="{{ url_for('static', filename='app.js') }}?v=20261019-theme" defer></script>
+    <script src="{{ url_for('static', filename='app.js') }}?v=20261027-company-filters" defer></script>
     <link rel="stylesheet" href="{{ url_for('static', filename='notifications.css') }}?v=20261019">
     <script src="{{ url_for('static', filename='notifications.js') }}?v=20261019" defer></script>
     {% block head_extra %}{% endblock %}
@@ -64,6 +64,7 @@
         </nav>
         <p class="nav-caption">PREFERENSI</p>
         <nav class="nav-list" aria-label="Preferensi">
+          {% if superuser %}<a href="{{ url_for('web.superadmin_system_settings') }}" class="nav-link {{ 'is-active' if current_endpoint == 'web.superadmin_system_settings' }}">{{ icon('settings') }}<span>Pengaturan sistem</span></a>{% endif %}
           <a href="{{ url_for(settings_endpoint) }}" class="nav-link {{ 'is-active' if current_endpoint == settings_endpoint }}"{% if current_endpoint == settings_endpoint %} aria-current="page"{% endif %}>{{ icon('settings') }}<span>Pengaturan akun</span>
           </a>
           <button type="button" class="nav-link" data-dialog="help-dialog">{{ icon('help') }}<span>Pusat bantuan</span>
@@ -153,6 +154,8 @@
     <noscript>
       <div class="noscript-notice">Aktifkan JavaScript untuk menu ponsel, preview pengajuan, dan pengelolaan data. Navigasi cepat tetap tersedia.</div>
     </noscript>
+    {% if form_restore %}<button type="button" hidden data-restore-form data-dialog="{{ form_restore.dialog }}"{% if form_restore.action %} data-form-action="{{ form_restore.action }}"{% endif %} data-form-values='{{ form_restore["values"]|tojson }}'></button>{% endif %}
+    {% if project_filter_catalog is defined %}<script type="application/json" id="project-filter-catalog">{{ project_filter_catalog|tojson }}</script>{% endif %}
     {% block scripts %}{% endblock %}
   </body>
 </html>

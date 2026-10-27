@@ -35,7 +35,7 @@
   </div>
   <h3 class="form-section-title">Perusahaan &amp; skema gaji</h3>
   <div class="field">
-    <label for="{{ prefix }}-company">Perusahaan induk</label>
+    <label for="{{ prefix }}-company">Perusahaan</label>
     {% if superuser %}
     <select id="{{ prefix }}-company" name="perusahaan_induk" data-company-select required>
       <option value="">Pilih perusahaan</option>
@@ -67,7 +67,7 @@
     <input id="{{ prefix }}-salary" type="number" name="gaji" min="0" max="2147483647" step="1" required value="{{ record.gaji if record else '' }}" inputmode="numeric" placeholder="Tanpa titik atau koma">
   </div>
   <div class="field">
-    <label for="{{ prefix }}-cycle">Siklus gaji</label>
+    <label for="{{ prefix }}-cycle">Siklus gaji (fallback bulanan)</label>
     <select id="{{ prefix }}-cycle" name="siklus_gaji">
       {% for cycle,label in [('A','A - Mulai tanggal 1'),('B','B - Mulai tanggal 16'),('C','C - Mulai tanggal 21'),('D','D - Mulai tanggal 26')] %}
       <option value="{{ cycle }}"{% if (record and record.siklus_gaji == cycle) or (not record and cycle == 'B') %} selected{% endif %}>{{ label }}</option>
@@ -80,6 +80,23 @@
     <input id="{{ prefix }}-fee" type="number" name="admin_fee_flat" min="0" max="1000000" step="1" required value="{{ record.admin_fee_flat if record else '' }}" placeholder="Isi manual, 0 - 1.000.000" inputmode="numeric">
     <p class="field-hint">Wajib diisi manual. PPN mengikuti pengaturan sistem.</p>
   </div>
+  {% endif %}
+  <div class="field field-full">
+    <p class="field-hint" data-effective-cutoff>Skema efektif mengikuti perusahaan. Siklus gaji tersimpan sebagai fallback bulanan.</p>
+  </div>
+  {% if superuser %}
+  <div class="field field-full">
+    <label for="{{ prefix }}-reg-mode">Batas REG per transaksi</label>
+    <select id="{{ prefix }}-reg-mode" name="reg_limit_mode" data-reg-limit-mode>
+      <option value="inherit">Ikuti perusahaan</option><option value="override">Batas khusus karyawan</option>
+    </select>
+    <p class="field-hint" data-company-reg-limit>Batas perusahaan: pilih perusahaan.</p>
+  </div>
+  <div class="field field-full" data-reg-override-field hidden>
+    <label for="{{ prefix }}-reg-override">Batas khusus karyawan (Rp)</label>
+    <input id="{{ prefix }}-reg-override" name="reg_withdrawal_max_override" type="number" min="1" max="2147483647" step="1" inputmode="numeric" disabled>
+  </div>
+  <div class="field field-full"><p class="field-hint" data-effective-reg-limit aria-live="polite"></p></div>
   {% endif %}
   <h3 class="form-section-title">Rekening tujuan</h3>
   <div class="field">

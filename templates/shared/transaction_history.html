@@ -3,8 +3,12 @@
 {% block title %}Riwayat Transaksi{% endblock %}
 {% block breadcrumb %}Riwayat transaksi{% endblock %}
 {% block content %}
-{% call page_heading('TRANSAKSI', 'Riwayat Transaksi', 'Telusuri pengajuan berdasarkan pegawai, waktu, perusahaan, dan status.') %}<button type="button" class="button button-secondary" data-dialog="export-dialog">{{ icon('download') }} Export Excel</button>{% endcall %}
-<div class="metric-grid metric-grid-three">{{ metric('Nominal hasil filter', total_nom|rupiah, 'Agregat mengikuti perhitungan server', 'wallet', 'accent-blue') }}{{ metric('Biaya admin', total_admin|rupiah, 'Total biaya pada hasil filter', 'receipt') }}{{ metric('Jumlah transaksi', rows|length, 'Sesuai seluruh filter aktif', 'history') }}
+{% call page_heading('TRANSAKSI', 'Riwayat Transaksi', 'Telusuri pengajuan berdasarkan pegawai, waktu, perusahaan, dan status.') %}<form action="{{ url_for('web.export_filtered_history') }}" method="get" class="row-actions">
+  {% for key,value in [('q',q),('company',f_company),('project',f_project),('product',product),('status',status),('start',start),('end',end)] %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}
+  <label class="sr-only" for="filtered-export-format">Format ekspor hasil filter</label><select name="format" id="filtered-export-format"><option value="xlsx">Excel</option><option value="csv">CSV</option></select>
+  <button type="submit" class="button button-primary">{{ icon('download') }} Ekspor hasil filter</button>
+</form><button type="button" class="button button-secondary" data-dialog="export-dialog">Ekspor kustom</button>{% endcall %}
+<div class="metric-grid metric-grid-three">{{ metric('Nominal transaksi selesai', total_nom|rupiah, 'Hanya status selesai dalam hasil filter', 'wallet', 'accent-blue') }}{{ metric('Biaya transaksi selesai', total_admin|rupiah, 'Hanya status selesai dalam hasil filter', 'receipt') }}{{ metric('Jumlah transaksi', rows|length, 'Sesuai seluruh filter aktif', 'history') }}
 </div>
 <section class="card">
   <div class="card-header">
@@ -14,7 +18,7 @@
     </div>
     <span class="badge badge-neutral">{{ rows|length }} hasil</span>
   </div>
-  <form method="get" class="filter-bar" data-date-range>
+  <form method="get" class="filter-bar" data-date-range data-company-project-filter>
     <div class="field field-search">
       <label for="history-q">Cari pegawai atau rekening</label>
       <div class="input-wrap has-leading">{{ icon('search') }}<input type="search" name="q" id="history-q" placeholder="Nama, ID, email, atau rekening..." value="{{ q }}">
@@ -22,8 +26,9 @@
     </div>
     <div class="field">
       <label for="history-company">Perusahaan</label>
-      <select name="company" id="history-company">
+      <select name="company" id="history-company"{% if superuser %} data-filter-company{% endif %}>
         <option value="">{{ 'Semua perusahaan' if superuser else 'Cakupan perusahaan saya' }}</option>
+        {% if f_company and f_company not in companies %}<option value="{{ f_company }}" selected>{{ f_company }} (tidak ditemukan)</option>{% endif %}
         {% for company in companies %}
         <option value="{{ company }}"{% if company == f_company %} selected{% endif %}>{{ company }}</option>
         {% endfor %}
@@ -31,8 +36,9 @@
     </div>
     <div class="field">
       <label for="history-project">Project</label>
-      <select name="project" id="history-project">
+      <select name="project" id="history-project" data-filter-project>
         <option value="">Semua project</option>
+        {% if f_project and f_project not in projects %}<option value="{{ f_project }}" selected>{{ f_project }} (di luar pilihan perusahaan)</option>{% endif %}
         {% for project in projects|default([]) %}
         <option value="{{ project }}"{% if project == f_project %} selected{% endif %}>{{ project }}</option>
         {% endfor %}

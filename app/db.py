@@ -578,6 +578,8 @@ def _ensure_db_schema():
         ensure_admin_product_columns(db)
 
 
+    from app.services.company_policy import ensure_company_policy_schema
+    ensure_company_policy_schema(get_db(), db_type)
     from app.services.security_service import ensure_security_schema
     ensure_security_schema(get_db(), db_type)
     from app.services.company_lifecycle import ensure_lifecycle_schema

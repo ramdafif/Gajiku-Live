@@ -7,7 +7,7 @@
 {% call page_heading('ADMIN', 'Kelola Admin', 'Kelola akun admin, akses perusahaan, dan hak persetujuan.') %}
 <button type="button" class="button button-primary" data-dialog="admin-add">{{ icon('plus') }} Tambah admin</button>
 {% endcall %}
-<div class="notice notice-info">{{ icon('shield') }}<span>Hak persetujuan dan cakupan perusahaan selalu diverifikasi server. Perubahan konfigurasi perusahaan dapat mengikuti akun admin lain yang sudah terdaftar.</span>
+<div class="notice notice-info">{{ icon('shield') }}<span>Hak persetujuan dan cakupan perusahaan selalu diverifikasi server. Kebijakan perusahaan dikelola hanya melalui Kelola Perusahaan; perubahan akun admin tidak mengubahnya.</span>
 </div>
 <section class="card">
   <div class="card-header">
@@ -27,6 +27,7 @@
       <label for="admin-company">Perusahaan</label>
       <select name="company" id="admin-company">
         <option value="">Semua perusahaan</option>
+        {% if f_company and f_company not in companies %}<option value="{{ f_company }}" selected>{{ f_company }} (tidak ditemukan)</option>{% endif %}
         {% for company in companies %}
         <option value="{{ company }}"{% if company == f_company %} selected{% endif %}>{{ company }}</option>
         {% endfor %}
@@ -44,8 +45,6 @@
           <th>Perusahaan</th>
           <th>Status</th>
           <th>Hak persetujuan</th>
-          <th>Cutoff</th>
-          <th>Produk</th>
           <th class="text-right">Tindakan</th>
         </tr>
       </thead>
@@ -67,17 +66,9 @@
           <td>
             <span class="badge {{ 'badge-blue' if row.hak_approval else 'badge-neutral' }}">{{ 'Diizinkan' if row.hak_approval else 'Tanpa approval' }}</span>
           </td>
-          <td>{{ ['Senin','Selasa','Rabu','Kamis','Jumat','Sabtu','Minggu'][row.cutoff_hari|int] if row.cutoff_mingguan_aktif else 'Bulanan' }}</td>
-          <td>
-            {% if row.produk_reg_aktif %}
-            <span class="badge badge-blue">REG</span>
-            {% endif %} {% if row.produk_urg_aktif %}
-            <span class="badge badge-urgent">URG</span>
-            {% endif %}
-          </td>
           <td>
             <div class="row-actions">
-              <button type="button" class="button button-secondary button-small" data-dialog="admin-edit" data-form-action="{{ url_for('web.superadmin_edit_admin', admin_id=row.id) }}" data-form-values='{{ {'nama':row.name,'email':row.email,'perusahaan':row.company,'no_telp':row.no_telp,'status':row.status_aktif,'hak_approval':row.hak_approval,'cutoff_mingguan_aktif':row.cutoff_mingguan_aktif,'cutoff_hari':row.cutoff_hari,'produk_reg_aktif':row.produk_reg_aktif,'produk_urg_aktif':row.produk_urg_aktif}|tojson }}'>{{ icon('edit') }} Edit</button>
+              <button type="button" class="button button-secondary button-small" data-dialog="admin-edit" data-form-action="{{ url_for('web.superadmin_edit_admin', admin_id=row.id) }}" data-form-values='{{ {'nama':row.name,'email':row.email,'perusahaan':row.company,'no_telp':row.no_telp,'status':row.status_aktif,'hak_approval':row.hak_approval}|tojson }}'>{{ icon('edit') }} Edit</button>
               <form action="{{ url_for('web.superadmin_delete_admin', admin_id=row.id) }}" method="post" data-confirm="Hapus akun {{ row.name }}? Server akan memeriksa perlindungan akun dan cakupan approval sebelum menghapus." data-confirm-title="Hapus akun admin?">{{ csrf() }}<button class="icon-button text-danger" type="submit" aria-label="Hapus admin {{ row.name }}">{{ icon('trash') }}</button>
               </form>
             </div>
@@ -105,7 +96,7 @@
     <h2 id="admin-edit-title">Edit akun admin</h2>
     <button type="button" class="icon-button" data-close-dialog aria-label="Tutup">{{ icon('close') }}</button>
   </div>
-  <form method="post" data-confirm="Data admin dan konfigurasi perusahaan akan diperbarui. Perubahan hak akses dapat memengaruhi alur approval." data-confirm-title="Simpan perubahan admin?">{{ csrf() }}{{ admin_fields(none, 'admin-edit', companies, false) }}<div class="dialog-actions">
+  <form method="post" data-confirm="Data akun admin akan diperbarui. Perubahan hak akses dapat memengaruhi alur approval." data-confirm-title="Simpan perubahan admin?">{{ csrf() }}{{ admin_fields(none, 'admin-edit', companies, false) }}<div class="dialog-actions">
       <button type="button" class="button button-secondary" data-close-dialog>Batal</button>
       <button class="button button-primary" type="submit">Simpan perubahan</button>
     </div>

@@ -1,0 +1,17 @@
+{% extends 'layouts/base.html' %}
+{% from 'components/macros.html' import csrf, page_heading with context %}
+{% block title %}Pengaturan Sistem{% endblock %}
+{% block breadcrumb %}Pengaturan sistem{% endblock %}
+{% block content %}
+{{ page_heading('SUPERADMIN', 'Pengaturan Sistem', 'Produk global dan PPN. Kebijakan tiap PT berada di Kelola Perusahaan.') }}
+<section class="card mb-24"><div class="card-header"><h2>Produk global</h2></div>
+<form method="post" class="card-body">{{ csrf() }}<input type="hidden" name="section" value="products"><input type="hidden" name="settings_version" value="{{ settings_version }}">
+{% for code,label in [('reg','Reguler (REG)'),('urg','Urgent (URG)')] %}<label class="switch-row"><span>{{ label }}</span><input name="products" value="{{ code }}" type="checkbox"{% if code in enabled_products %} checked{% endif %}></label>{% endfor %}
+<p class="field-hint">Ketersediaan akhir adalah irisan produk global dan produk perusahaan. Menyimpan produk tidak mengubah PPN atau transaksi existing.</p>
+<button type="submit" class="button button-primary">Simpan produk global</button></form></section>
+<section class="card"><div class="card-header"><h2>PPN biaya admin</h2></div>
+<form method="post" class="card-body">{{ csrf() }}<input type="hidden" name="section" value="ppn"><input type="hidden" name="settings_version" value="{{ settings_version }}">
+<label class="switch-row"><span>Aktifkan PPN 11%</span><input type="checkbox" name="ppn_enabled" value="1"{% if ppn_enabled %} checked{% endif %}></label>
+<p class="field-hint">Berlaku pada pengajuan berikutnya, tanpa mengubah biaya transaksi yang sudah diajukan. Menyimpan PPN tidak mengubah produk.</p>
+<button type="submit" class="button button-primary">Simpan PPN saja</button></form></section>
+{% endblock %}

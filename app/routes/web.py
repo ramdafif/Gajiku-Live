@@ -3,7 +3,7 @@ from datetime import datetime, date, timedelta
 from openpyxl import Workbook, load_workbook
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.styles import Font, PatternFill, Alignment
-from flask import Blueprint, current_app, render_template, request, redirect, url_for, session, flash, jsonify
+from flask import Blueprint, abort, current_app, render_template, request, redirect, url_for, session, flash, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 import io
@@ -20,7 +20,8 @@ from app.utils.cache import get_cache, set_cache, clear_cache_prefix
 from app.tasks.queue import get_stats as get_queue_stats
 from app.services.email_service import enqueue_email
 from app.services.client_service import client_by_name, employee_assignment, list_clients, list_projects, name_key
-from app.services.client_service import get_reg_withdrawal_max
+from app.services.company_policy import (effective_reg_limit, user_reg_limit, read_employee_override,
+    serialized_policy_write, record_policy_event)
 from app.services.security_service import (business_today, credential_version, rate_limit, require_destructive_reset,
     safe_return_url, serialized_admin_write, serialized_employee_write, serialized_transaction, serialized_withdrawal, token_serializer, withdrawal_key, withdrawal_token)
 from itsdangerous import BadSignature, SignatureExpired
@@ -263,18 +264,11 @@ def get_weekly_cutoff_config(company):
     company = (company or "").strip()
     if not company:
         return None
-    row = get_db().execute("""
-        SELECT cutoff_mingguan_aktif, cutoff_hari
-        FROM admins
-        WHERE LOWER(TRIM(company)) = LOWER(TRIM(?))
-          AND COALESCE(cutoff_mingguan_aktif, 0) = 1
-        ORDER BY id DESC LIMIT 1
-    """, (company,)).fetchone()
-    if not row:
+    row = client_by_name(get_db(), company)
+    if not row or not row["cutoff_mingguan_aktif"]:
         return None
-    day = int(row["cutoff_hari"] if row["cutoff_hari"] is not None else 2)
+    day = int(row["cutoff_hari"])
     return {"cutoff_hari": day if 0 <= day <= 6 else 2}
-
 
 def get_weekly_cutoff_counts(db, where_clause="1=1", where_params=None):
     """Hitung pegawai aktif per hari cutoff untuk dashboard KPI."""
@@ -283,10 +277,9 @@ def get_weekly_cutoff_counts(db, where_clause="1=1", where_params=None):
         SELECT configured.cutoff_hari, COUNT(*) AS total
         FROM (
             SELECT (
-                SELECT COALESCE(a.cutoff_hari, 2) FROM admins a
-                WHERE LOWER(TRIM(a.company)) = LOWER(TRIM(p.perusahaan_induk))
-                  AND COALESCE(a.cutoff_mingguan_aktif, 0)=1
-                ORDER BY a.id DESC LIMIT 1
+                SELECT c.cutoff_hari FROM clients c
+                WHERE c.name_key = LOWER(TRIM(p.perusahaan_induk))
+                  AND c.cutoff_mingguan_aktif=1 LIMIT 1
             ) AS cutoff_hari
             FROM pegawai p
             WHERE p.status_aktif=1 AND {where_clause}
@@ -295,6 +288,16 @@ def get_weekly_cutoff_counts(db, where_clause="1=1", where_params=None):
         GROUP BY configured.cutoff_hari
     """, params).fetchall()
     return {int(r["cutoff_hari"]): int(r["total"] or 0) for r in rows}
+
+
+def monthly_cycle_counts(db, where_clause="1=1", where_params=None):
+    rows = db.execute(f"""SELECT COALESCE(p.siklus_gaji,'A') AS cycle,COUNT(*) AS total
+        FROM pegawai p WHERE p.status_aktif=1 AND {where_clause}
+        AND NOT EXISTS (SELECT 1 FROM clients c WHERE c.name_key=LOWER(TRIM(p.perusahaan_induk))
+                        AND c.cutoff_mingguan_aktif=1)
+        GROUP BY COALESCE(p.siklus_gaji,'A')""", list(where_params or [])).fetchall()
+    counts = {row["cycle"]: int(row["total"]) for row in rows}
+    return tuple(counts.get(cycle, 0) for cycle in "ABCD")
 
 
 def weekly_period_start(d: date, cutoff_day: int) -> date:
@@ -624,6 +627,28 @@ def admin_employee_scope(db, alias="p"):
     column = "perusahaan_induk" if _is_parent_company(db, company) else "perusahaan"
     return f"LOWER(TRIM({alias}.{column})) = ?", [company.lower()]
 
+def employee_filter_options(db, company=""):
+    scope, params = admin_employee_scope(db)
+    rows = db.execute(f"""SELECT DISTINCT TRIM(COALESCE(p.perusahaan_induk,'')) AS company,
+        TRIM(COALESCE(p.perusahaan,'')) AS project FROM pegawai p
+        WHERE {scope} ORDER BY company, project""", params).fetchall()
+    grouped = {}
+    for row in rows:
+        key = name_key(row["company"])
+        entry = grouped.setdefault(key, {"company": row["company"], "projects": {}})
+        if row["project"]:
+            entry["projects"].setdefault(name_key(row["project"]), row["project"])
+    catalog = [{"company": entry["company"], "projects": sorted(entry["projects"].values(), key=str.lower)}
+               for entry in grouped.values()]
+    projects = {name_key(project): project for entry in catalog
+                if not company or name_key(entry["company"]) == name_key(company)
+                for project in entry["projects"]}
+    return catalog, sorted(projects.values(), key=str.lower)
+
+def canonical_filter(value, choices):
+    value = (value or "").strip()
+    return next((choice for choice in choices if name_key(choice) == name_key(value)), value)
+
 def format_rupiah(n):
     try:
         return f"{int(n):,}".replace(",", ".")
@@ -653,7 +678,7 @@ def get_enabled_products():
 
 
 def get_products_for_company(company):
-    """Global product setting intersected with the active company admin policy."""
+    """Global product setting intersected with the company policy."""
     enabled = set(get_enabled_products())
     company = (company or "").strip()
     if not company:
@@ -661,9 +686,8 @@ def get_products_for_company(company):
     row = get_db().execute("""
         SELECT COALESCE(produk_reg_aktif, 1) AS reg_on,
                COALESCE(produk_urg_aktif, 1) AS urg_on
-        FROM admins
-        WHERE LOWER(TRIM(company)) = LOWER(TRIM(?))
-        ORDER BY id DESC LIMIT 1
+        FROM clients
+        WHERE name_key = LOWER(TRIM(?)) LIMIT 1
     """, (company,)).fetchone()
     if row:
         if not int(row["reg_on"] or 0):
@@ -672,13 +696,14 @@ def get_products_for_company(company):
             enabled.discard("urg")
     return sorted(enabled)
 
-def save_app_setting(key, value):
+def save_app_setting(key, value, commit=True):
     db = get_db()
     if isinstance(db, sqlite3.Connection):
         db.execute("INSERT INTO app_settings (`key`, value) VALUES (?,?) ON CONFLICT(`key`) DO UPDATE SET value=excluded.value", (key, value))
     else:
         db.execute("INSERT INTO app_settings (`key`, value) VALUES (?,?) ON DUPLICATE KEY UPDATE value=VALUES(value)", (key, value))
-    db.commit()
+    if commit:
+        db.commit()
 
 def set_enabled_products(products):
     value = ",".join(products)
@@ -712,19 +737,6 @@ def get_admin_fee_flat_for_user(user_id: int) -> int:
     except Exception:
         pass
     return default_fee
-
-def get_runtime_force_limit() -> bool:
-    db = get_db()
-    row = db.execute(
-        "SELECT value FROM app_settings WHERE `key`='runtime_force_limit' LIMIT 1"
-    ).fetchone()
-    if not row:
-        return False
-    return str(row["value"] or "").strip().lower() in {"1", "true", "yes", "on"}
-
-def set_runtime_force_limit(enabled: bool) -> None:
-    value = "1" if enabled else "0"
-    save_app_setting("runtime_force_limit", value)
 
 def allowed_avatar(filename: str) -> bool:
     ext = os.path.splitext(filename or "")[1].lower()
@@ -1299,6 +1311,7 @@ def dashboard():
         enabled_products=enabled_products,
         avatar_url=avatar_url,
         pegawai_info=pegawai_info,
+        reg_limit=user_reg_limit(db, user["id"]),
     )
 
 @bp.route("/settings", methods=["GET", "POST"])
@@ -1385,7 +1398,7 @@ def tarik_gaji():
     except Exception:
         pass
     enabled_products = get_products_for_company(pegawai_company)
-    reg_withdrawal_max = get_reg_withdrawal_max(db, pegawai_company)
+    reg_withdrawal_max = user_reg_limit(db, user["id"])["effective"]
     selected_product = enabled_products[0] if enabled_products else "reg"
     pegawai_rekening = None
     try:
@@ -1736,7 +1749,7 @@ def riwayat_view():
         period_params = periods_for_query
 
     rows = db.execute(
-        f"""SELECT t.tanggal, t.periode, t.nominal, t.admin_fee, t.status, t.keterangan, t.product,
+        f"""SELECT t.id, t.tanggal, t.periode, t.nominal, t.admin_fee, t.status, t.keterangan, t.product,
                     COALESCE(NULLIF(t.rekening_tujuan,''), p.no_rekening, '') AS no_rekening,
                     COALESCE(NULLIF(t.rekening_tujuan_label,''), 'No_Rek Bank') AS rekening_tujuan_label
              FROM transactions t
@@ -1790,6 +1803,8 @@ def admin_dashboard():
     ret = require_admin() # Tetap memakai admin biasa
     if ret:
         return ret
+    if session.get("is_superadmin"):
+        return superadmin_dashboard()
 
     db = get_db()
     
@@ -1853,7 +1868,8 @@ def admin_dashboard():
         
     where_clause, where_params = admin_employee_scope(db)
 
-    cache_key = f"admin_kpi:v7:{cache_company_key}:{s_first}:{s_next}:{periode_key}:{trend_start_key}"
+    policy_epoch = db.execute("SELECT value FROM app_settings WHERE `key`='company_policy_mutex'").fetchone()["value"]
+    cache_key = f"admin_kpi:{policy_epoch}:v7:{cache_company_key}:{s_first}:{s_next}:{periode_key}:{trend_start_key}"
     cached_kpi = get_cache(cache_key)
     
     if cached_kpi:
@@ -2062,15 +2078,7 @@ def admin_dashboard():
             """, where_params).fetchall()
 
         # 6) DATA KPI SIKLUS GAJI PEGAWAI
-        peg_where_active = f"AND {where_clause}"
-        row = db.execute(f"SELECT COUNT(*) FROM pegawai p WHERE p.status_aktif=1 AND COALESCE(p.siklus_gaji,'A')='A' {peg_where_active}", where_params).fetchone()
-        cycle_a = row["COUNT(*)"] if row else 0
-        row = db.execute(f"SELECT COUNT(*) FROM pegawai p WHERE p.status_aktif=1 AND COALESCE(p.siklus_gaji,'A')='B' {peg_where_active}", where_params).fetchone()
-        cycle_b = row["COUNT(*)"] if row else 0
-        row = db.execute(f"SELECT COUNT(*) FROM pegawai p WHERE p.status_aktif=1 AND COALESCE(p.siklus_gaji,'A')='C' {peg_where_active}", where_params).fetchone()
-        cycle_c = row["COUNT(*)"] if row else 0
-        row = db.execute(f"SELECT COUNT(*) FROM pegawai p WHERE p.status_aktif=1 AND COALESCE(p.siklus_gaji,'A')='D' {peg_where_active}", where_params).fetchone()
-        cycle_d = row["COUNT(*)"] if row else 0
+        cycle_a, cycle_b, cycle_c, cycle_d = monthly_cycle_counts(db, where_clause, where_params)
 
         # 7) GRAFIK HARIAN (CHART DATA)
         if is_super:
@@ -2272,40 +2280,18 @@ def admin_settings():
     # Render halaman setting khusus admin biasa
     return render_template("admin_settings.html", **settings_context())
 
-@bp.get("/admin/riwayat")
-def admin_riwayat():
-    ret = require_admin()
-    if ret:
-        return ret
-
-    db = get_db()
-
-    # 🏢 AMBIL DATA DARI SESSION (Sekarang udah disamain persis kuncinya, bro!)
-    admin_company = session.get("company") # 🟢 Pakai "company", bukan "admin_company"
-    admin_email = session.get("admin_email", "").lower() or session.get("email", "").lower()
-    
-    # 💡 DETEKSI ROLE (Copas rumus sakti dari dashboard lu)
-    is_super = bool(session.get("is_superadmin"))
-    
-    # PT Windu Karya selalu dianggap induk/holding (lihat _is_parent_company)
-    is_parent = bool(admin_company) and not is_super and _is_parent_company(db, admin_company)
-
-    # Aturan main skope data filter perusahaan (Rumus dashboard)
+def filtered_history_query(db):
     where_clause, where_params = admin_employee_scope(db)
-
-    # ... ke bawahnya sama (query SQL pakai JOIN murni + params) ...
-
+    is_super = bool(session.get("is_superadmin"))
+    start_dt, end_dt = history_date_range()
     q = (request.args.get("q") or "").strip()
-    status = (request.args.get("status") or "").strip()
-    product = (request.args.get("product") or "").strip()
     f_company = (request.args.get("company") or "").strip()
     f_project = (request.args.get("project") or "").strip()
-    start_dt, end_dt = history_date_range()
-
-   # 1. Query Utama (Standar & Bersih)
+    status = (request.args.get("status") or "").strip()
+    product = (request.args.get("product") or "").strip()
     sql = f"""
         SELECT t.id, t.tanggal, t.periode, t.nominal, t.admin_fee, t.status, t.product,
-               t.keterangan, t.created_at,
+               t.keterangan, t.created_at, COALESCE(p.siklus_gaji,'A') AS siklus,
                u.name AS nama, u.email AS email_user,
                COALESCE(p.perusahaan_induk, '') AS company,
                COALESCE(p.perusahaan, '') AS project,
@@ -2315,7 +2301,7 @@ def admin_riwayat():
                COALESCE(NULLIF(t.rekening_tujuan_label,''), 'No_Rek Bank') AS rekening_tujuan_label
         FROM transactions t
         JOIN users u ON u.id = t.user_id
-        JOIN pegawai p ON LOWER(TRIM(p.email)) = LOWER(TRIM(u.email))
+        LEFT JOIN pegawai p ON LOWER(TRIM(p.email)) = LOWER(TRIM(u.email))
         WHERE t.tanggal >= ? AND t.tanggal <= ? AND {where_clause}
     """
     params = [start_dt.isoformat(), end_dt.isoformat()] + where_params
@@ -2349,22 +2335,51 @@ def admin_riwayat():
 
     sql += " ORDER BY t.tanggal DESC, t.id DESC"
 
+    return sql, params
+
+@bp.get("/admin/riwayat")
+def admin_riwayat():
+    ret = require_admin()
+    if ret:
+        return ret
+
+    db = get_db()
+
+    # 🏢 AMBIL DATA DARI SESSION (Sekarang udah disamain persis kuncinya, bro!)
+    admin_company = session.get("company") # 🟢 Pakai "company", bukan "admin_company"
+    admin_email = session.get("admin_email", "").lower() or session.get("email", "").lower()
+
+    # 💡 DETEKSI ROLE (Copas rumus sakti dari dashboard lu)
+    is_super = bool(session.get("is_superadmin"))
+
+    # PT Windu Karya selalu dianggap induk/holding (lihat _is_parent_company)
+    is_parent = bool(admin_company) and not is_super and _is_parent_company(db, admin_company)
+
+    # Aturan main skope data filter perusahaan (Rumus dashboard)
+    where_clause, where_params = admin_employee_scope(db)
+
+    # ... ke bawahnya sama (query SQL pakai JOIN murni + params) ...
+
+    q = (request.args.get("q") or "").strip()
+    status = (request.args.get("status") or "").strip()
+    product = (request.args.get("product") or "").strip()
+    f_company = (request.args.get("company") or "").strip()
+    f_project = (request.args.get("project") or "").strip()
+    start_dt, end_dt = history_date_range()
+
+   # 1. Query Utama (Standar & Bersih)
+    sql, params = filtered_history_query(db)
+
     rows = db.execute(sql, params).fetchall()
 
     total_nom = sum(int(r["nominal"] or 0) for r in rows if r["status"] == "sukses")
     total_admin = sum(int(r["admin_fee"] or 0) for r in rows if r["status"] == "sukses")
 
-    project_sql = "SELECT DISTINCT TRIM(perusahaan) AS project FROM pegawai WHERE perusahaan IS NOT NULL AND TRIM(perusahaan) <> ''"
-    project_params = []
-    if not is_super and not admin_company:
-        project_sql += " AND 1=0"
-    elif not is_super and admin_company:
-        project_sql += " AND LOWER(TRIM(perusahaan_induk)) = LOWER(TRIM(?))" if is_parent else " AND LOWER(TRIM(perusahaan)) = LOWER(TRIM(?))"
-        project_params.append(admin_company)
-    elif is_super and f_company:
-        project_sql += " AND LOWER(TRIM(perusahaan_induk)) = LOWER(TRIM(?))"
-        project_params.append(f_company)
-    projects = sorted({r["project"] for r in db.execute(project_sql, project_params).fetchall() if r["project"]})
+    project_filter_catalog, projects = employee_filter_options(db, f_company if is_super else "")
+    if is_super:
+        companies = [entry["company"] for entry in project_filter_catalog if entry["company"]]
+    f_company = canonical_filter(f_company, companies) if is_super else ((admin_company or "").strip() if f_company else "")
+    f_project = canonical_filter(f_project, projects)
 
     return render_template(
         "admin_riwayat.html",
@@ -2376,7 +2391,8 @@ def admin_riwayat():
         end=end_dt.isoformat(),
         total_nom=total_nom,
         total_admin=total_admin,
-        companies=([admin_company] if not is_super and admin_company else []),
+        companies=companies if is_super else ([admin_company] if admin_company else []),
+        project_filter_catalog=project_filter_catalog,
         projects=projects,
         f_company=f_company,
         f_project=f_project,
@@ -2384,6 +2400,28 @@ def admin_riwayat():
 
 # =========================================================
 # ==================== ADMIN export csv ======================
+@bp.get("/admin/export_filtered")
+def export_filtered_history():
+    ret = require_admin()
+    if ret:
+        return ret
+    sql, params = filtered_history_query(get_db())
+    rows = get_db().execute(sql, params).fetchall()
+    file_format = "xlsx" if request.args.get("format") == "xlsx" else "csv"
+    headers = ["ID", "Tanggal", "Periode", "ID Pegawai", "Pegawai", "Email", "Perusahaan", "Jabatan",
+               "Tipe Rekening", "No_Rek Bank", "Produk", "Nominal", "Admin", "Status", "Keterangan", "Dibuat"]
+    values = [[row["id"], row["tanggal"], format_period_label(row["periode"]), row["id_pegawai"], row["nama"],
+               row["email_user"], row["project"], row["jabatan"], short_rekening_label(row["rekening_tujuan_label"]),
+               row["no_rekening"], row["product"], row["nominal"], row["admin_fee"], row["status"],
+               row["keterangan"] or "", row["created_at"]] for row in rows]
+    if session.get("is_superadmin"):
+        headers.insert(10, "Siklus")
+        for output, row in zip(values, rows):
+            output.insert(10, row["siklus"])
+    from flask import Response
+    return Response(build_spreadsheet_bytes(headers, values, file_format), mimetype=SPREADSHEET_MIMETYPES[file_format],
+                    headers={"Content-Disposition": f'attachment; filename="ekspor_hasil_filter.{file_format}"'})
+
 @bp.get("/admin/export")
 def admin_export():
     ret = require_admin()
@@ -2459,7 +2497,7 @@ def admin_export():
 
 # --- Admin: Pegawai CRUD ---
 @bp.route("/admin/pegawai", methods=["GET"], endpoint="admin_pegawai")
-def admin_pegawai():
+def admin_pegawai(form_restore=None):
     ret = require_admin()
     if ret: return ret
 
@@ -2468,51 +2506,6 @@ def admin_pegawai():
         if ret: return ret
 
     db = get_db()
-
-    # [Tetap Aman] Blok pengecekan/migrasi kolom otomatis bawaan lu
-    try:
-        db.execute("SELECT id_pegawai FROM pegawai LIMIT 1").fetchone()
-    except Exception:
-        db.execute("ALTER TABLE pegawai ADD COLUMN id_pegawai TEXT DEFAULT ''")
-        db.commit()
-    try:
-        db.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_pegawai_id_pegawai "
-            "ON pegawai(id_pegawai) WHERE id_pegawai <> ''"
-        )
-        db.commit()
-    except Exception:
-        pass
-    try:
-        db.execute("SELECT perusahaan FROM pegawai LIMIT 1").fetchone()
-    except Exception:
-        db.execute("ALTER TABLE pegawai ADD COLUMN perusahaan TEXT DEFAULT ''")
-        db.commit()
-    try:
-        db.execute("SELECT no_rekening FROM pegawai LIMIT 1").fetchone()
-    except Exception:
-        db.execute("ALTER TABLE pegawai ADD COLUMN no_rekening TEXT DEFAULT ''")
-        db.commit()
-    try:
-        db.execute("SELECT no_rekening_lain FROM pegawai LIMIT 1").fetchone()
-    except Exception:
-        db.execute("ALTER TABLE pegawai ADD COLUMN no_rekening_lain TEXT DEFAULT ''")
-        db.commit()
-    try:
-        db.execute("SELECT rekening_ewallet FROM pegawai LIMIT 1").fetchone()
-    except Exception:
-        db.execute("ALTER TABLE pegawai ADD COLUMN rekening_ewallet TEXT DEFAULT ''")
-        db.commit()
-    try:
-        db.execute("SELECT no_telp FROM pegawai LIMIT 1").fetchone()
-    except Exception:
-        db.execute("ALTER TABLE pegawai ADD COLUMN no_telp TEXT DEFAULT ''")
-        db.commit()
-    try:
-        db.execute("SELECT admin_fee_flat FROM pegawai LIMIT 1").fetchone()
-    except Exception:
-        db.execute("ALTER TABLE pegawai ADD COLUMN admin_fee_flat INTEGER DEFAULT 15000")
-        db.commit()
 
     # 1. Ambil parameter filter dari frontend
     q = (request.args.get("q") or "").strip()
@@ -2537,41 +2530,25 @@ def admin_pegawai():
                COALESCE(no_telp,'') AS no_telp,
                COALESCE(admin_fee_flat, 15000) AS admin_fee_flat,
                siklus_gaji,
-               COALESCE((SELECT a.cutoff_mingguan_aktif FROM admins a
-                         WHERE LOWER(TRIM(a.company)) = LOWER(TRIM(pegawai.perusahaan_induk))
-                           AND COALESCE(a.cutoff_mingguan_aktif, 0)=1
-                         ORDER BY a.id DESC LIMIT 1), 0) AS cutoff_mingguan_aktif,
-               (SELECT a.cutoff_hari FROM admins a
-                WHERE LOWER(TRIM(a.company)) = LOWER(TRIM(pegawai.perusahaan_induk))
-                  AND COALESCE(a.cutoff_mingguan_aktif, 0)=1
-                ORDER BY a.id DESC LIMIT 1) AS cutoff_hari,
+               reg_withdrawal_max_override,
+               COALESCE((SELECT c.cutoff_mingguan_aktif FROM clients c
+                         WHERE c.name_key=LOWER(TRIM(pegawai.perusahaan_induk))),0) AS cutoff_mingguan_aktif,
+               (SELECT c.cutoff_hari FROM clients c
+                WHERE c.name_key=LOWER(TRIM(pegawai.perusahaan_induk))) AS cutoff_hari,
                created_at
         FROM pegawai
         WHERE 1=1
     """
     params = []
     
-    # 🛑 FILTER HAK AKSES OTOMATIS TANPA ELIF HARDCODE
-    if is_super:
-        # Superadmin bebas melihat semua data tanpa batas
-        pass
-    elif admin_company:
-        # Cek secara live: apakah company si admin ini induk/holding? (PT Windu Karya selalu induk)
-        is_parent = _is_parent_company(db, admin_company)
+    scope, scope_params = admin_employee_scope(db, "pegawai")
+    base_sql += f" AND {scope}"
+    params.extend(scope_params)
+    selected_client = (request.args.get("client") or "").strip() if is_super else ""
+    if selected_client:
+        base_sql += " AND LOWER(TRIM(COALESCE(perusahaan_induk,''))) = ?"
+        params.append(name_key(selected_client))
 
-        if is_parent:
-            # 🏢 JIKA DIA INDUK (Semi-Admin otomatis): Kunci data berdasarkan induknya
-            base_sql += " AND LOWER(TRIM(perusahaan_induk)) = LOWER(TRIM(?))"
-            params.append(admin_company)
-        else:
-            # 🏢 JIKA DIA PT BIASA / ANAK (Admin lokal biasa): Kunci data langsung ke nama PT-nya
-            base_sql += " AND LOWER(TRIM(perusahaan)) = LOWER(TRIM(?))"
-            params.append(admin_company)
-    else:
-        # Jika session company kosong, proteksi agar tidak menampilkan data
-        base_sql += " AND 1=0"
-
-    # 🔍 FILTER SEARCH BOX
     if q:
         like = f"%{q}%"
         base_sql += """ AND (
@@ -2592,7 +2569,8 @@ def admin_pegawai():
     from app.services.company_lifecycle import billing_state
     blocked_companies = {client["name_key"] for client in list_clients(db)
                          if billing_state(db, client["id"])["blocked"]}
-    rows = [dict(row, billing_blocked=name_key(row["perusahaan_induk"]) in blocked_companies) for row in rows]
+    rows = [dict(row, billing_blocked=name_key(row["perusahaan_induk"]) in blocked_companies,
+                 reg_limit=effective_reg_limit(db, row["perusahaan_induk"], row)) for row in rows]
 
     # =========================================================================
     # 🗂️ LOGIK MENAMPILKAN ISI DROPDOWN FILTER SECARA OTOMATIS
@@ -2603,21 +2581,32 @@ def admin_pegawai():
     # =========================================================================
     # 🗂️ LOGIK MENAMPILKAN ISI DROPDOWN FILTER SECARA OTOMATIS (SQUASH DUPLICATE)
     # =========================================================================
-    company_sql = "SELECT DISTINCT perusahaan FROM pegawai WHERE TRIM(COALESCE(perusahaan,''))<>''"
-    company_params = []
-    if not is_super:
-        company_sql += " AND LOWER(TRIM(perusahaan_induk))=LOWER(TRIM(?))"
-        company_params.append(admin_company or "")
-    companies = sorted({row["perusahaan"] for row in db.execute(company_sql, company_params).fetchall()}, key=str.lower)
+    project_filter_catalog, companies = employee_filter_options(db, selected_client)
+    f_company = canonical_filter(f_company, companies)
     catalog = list_clients(db) if is_super else [client_by_name(db, admin_company)]
     client_catalog = [{"name": client["name"], "allow_projects": bool(client["allow_projects"]),
+                       "reg_withdrawal_max": client["reg_withdrawal_max"],
+                       "cutoff_mingguan_aktif": bool(client["cutoff_mingguan_aktif"]), "cutoff_hari": client["cutoff_hari"],
                        "projects": [project["name"] for project in list_projects(db, client["id"])]}
                       for client in catalog if client]
+    company_choices = [client["name"] for client in client_catalog]
+    company_choices += [entry["company"] for entry in project_filter_catalog if entry["company"]]
+    selected_client = canonical_filter(selected_client, company_choices)
+    filter_companies = sorted({name_key(company): company for company in reversed(company_choices)}.values(), key=str.lower)
     return render_template("admin_pegawai.html", rows=rows, q=q, companies=companies,
                            f_company=f_company, total=len(rows), is_superadmin=is_super,
-                           client_catalog=client_catalog, selected_client=request.args.get("client") or "")
+                           form_restore=form_restore, client_catalog=client_catalog, selected_client=selected_client,
+                           filter_companies=filter_companies, project_filter_catalog=project_filter_catalog)
+
+def employee_form_error(message=None, pid=None):
+    if message:
+        flash(message, "error")
+    restore = {"dialog": "employee-edit" if pid else "employee-add", "values": request.form.to_dict(),
+               "action": url_for("web.admin_pegawai_update", pid=pid) if pid else url_for("web.admin_pegawai_add")}
+    return admin_pegawai(form_restore=restore), 422
 
 @bp.route("/admin/pegawai/add", methods=["POST"], endpoint="admin_pegawai_add")
+@serialized_policy_write
 def admin_pegawai_add():
     if not session.get("is_superadmin"):
         ret = require_admin()
@@ -2639,7 +2628,7 @@ def admin_pegawai_add():
         )
     except ValueError as error:
         flash(str(error), "error")
-        return redirect(url_for("web.admin_pegawai"))
+        return employee_form_error()
 
     no_rekening = (request.form.get("no_rekening") or "").strip()
     no_rekening_lain = (request.form.get("no_rekening_lain") or "").strip()
@@ -2657,19 +2646,19 @@ def admin_pegawai_add():
 
     if not nama or not valid_email(email) or not 0 <= gaji <= 2_147_483_647:
         flash("Nama/email wajib valid dan gaji harus berada antara 0 sampai 2.147.483.647.", "error")
-        return redirect(url_for("web.admin_pegawai"))
+        return employee_form_error()
     if not id_pegawai or not nama or not email:
         flash("ID pegawai, nama, dan email wajib diisi.", "error")
-        return redirect(url_for("web.admin_pegawai"))
+        return employee_form_error()
     if not employee_id_is_valid(id_pegawai):
         flash(f"ID pegawai maksimal {EMPLOYEE_ID_MAX_LEN} karakter alfanumerik.", "error")
-        return redirect(url_for("web.admin_pegawai"))
+        return employee_form_error()
     if not ewallet_is_valid(rekening_ewallet):
         flash("Rekening e-wallet hanya boleh berisi huruf, angka, dan spasi.", "error")
-        return redirect(url_for("web.admin_pegawai"))
+        return employee_form_error()
     if admin_fee_flat is None:
         flash(f"Admin fee wajib diisi manual (angka 0 - {rupiah_format(ADMIN_FEE_FLAT_MAX)}).", "error")
-        return redirect(url_for("web.admin_pegawai"))
+        return employee_form_error()
 
     db = get_db()
 
@@ -2680,10 +2669,15 @@ def admin_pegawai_add():
 
     if exists:
         flash("ID pegawai atau email sudah terdaftar.", "error")
-        return redirect(url_for("web.admin_pegawai"))
+        return employee_form_error()
+
+    try:
+        reg_override = read_employee_override(request.form, is_superadmin=bool(session.get("is_superadmin")))
+    except ValueError as error:
+        return employee_form_error(str(error))
 
     # 🚀 JALANKAN INSERT DATA BESERTA KOLOM perusahaan_induk HASIL OTOMATISASI BACKEND
-    db.execute("""
+    cursor = db.execute("""
         INSERT INTO pegawai (
             id_pegawai, nama, email, jabatan, gaji, status_aktif, 
             perusahaan, perusahaan_induk, no_rekening, no_rekening_lain, 
@@ -2696,6 +2690,8 @@ def admin_pegawai_add():
         rekening_ewallet, no_telp, siklus, admin_fee_flat, 
         datetime.now().isoformat(timespec="seconds")
     ))
+    db.execute("UPDATE pegawai SET reg_withdrawal_max_override=? WHERE id=?", (reg_override, cursor.lastrowid))
+    record_policy_event(db, None, "employee_created", {}, {"employee_id": cursor.lastrowid, "override": reg_override})
     db.commit()
 
     flash("Pegawai ditambahkan.", "success")
@@ -2733,7 +2729,7 @@ def admin_pegawai_import_template():
     ws.title = "Import Pegawai"
     headers = ["ID Pegawai*", "Nama*", "Email*", "Jabatan", "Project",
                "No Rekening Bank Utama", "No Rekening Bank Lain", "Rekening E-Wallet", "No Telp",
-               "Gaji Pokok", "Status Aktif", "Siklus Gaji", "Admin Fee", "Perusahaan*"]
+               "Gaji Pokok", "Status Aktif", "Siklus Gaji", "Admin Fee", "Perusahaan*", "Batas REG khusus (opsional)"]
     for index, header in enumerate(headers, start=1):
         cell = ws.cell(row=1, column=index, value=header)
         cell.font = Font(bold=True, color="FFFFFF")
@@ -2743,7 +2739,7 @@ def admin_pegawai_import_template():
     projects = list_projects(db, company["id"]) if company and company["allow_projects"] else []
     example = ["EMP001", "Contoh Nama", "contoh@email.com", "Staff", projects[0]["name"] if projects else "",
                "1234567890", "", "", "081234567890", 5000000, "Aktif", "B", "",
-               company["name"] if company else ""]
+               company["name"] if company else "", "IKUTI_PT" if is_super else ""]
     ws.append(example)
     for cells, formula in (("K2:K1000", '"Aktif,Nonaktif"'), ("L2:L1000", '"A,B,C,D"')):
         validation = DataValidation(type="list", formula1=formula, allow_blank=True)
@@ -2772,7 +2768,8 @@ def admin_pegawai_import_template():
     instructions = wb.create_sheet("Petunjuk")
     instructions.column_dimensions["A"].width = 110
     for instruction in [
-        "IMPORT PEGAWAI: satu client = satu PT. Jangan ubah urutan 14 kolom.",
+        "IMPORT PEGAWAI: satu client = satu PT. Jangan ubah urutan 14 kolom pertama.",
+        "Kolom O opsional: kosong/IKUTI_PT mengikuti perusahaan, atau angka bulat positif batas khusus. Hanya Superadmin.",
         "Hapus atau timpa baris contoh sebelum upload. ID, nama, email, dan perusahaan wajib diisi.",
         "Kolom E adalah Project; kolom N adalah Perusahaan. Superadmin wajib mengisi kolom N.",
         "Admin PT terkunci pada perusahaan akunnya. Kolom N boleh kosong atau sama dengan PT akun.",
@@ -2798,6 +2795,7 @@ def admin_pegawai_import_template():
 
 
 @bp.post("/admin/pegawai/import")
+@serialized_policy_write
 def admin_pegawai_import():
     ret = require_admin()
     if ret: return ret
@@ -2833,7 +2831,7 @@ def admin_pegawai_import():
             if ws.max_row and ws.max_row > (IMPORT_MAX_ROWS + 1) * 5:
                 raise ValueError("Terlalu banyak baris fisik pada file Excel")
             raw_rows = []
-            for physical_row, row in enumerate(ws.iter_rows(min_row=2, max_col=14, values_only=True), start=2):
+            for physical_row, row in enumerate(ws.iter_rows(min_row=2, max_col=15, values_only=True), start=2):
                 if physical_row > (IMPORT_MAX_ROWS + 1) * 5:
                     raise ValueError("Terlalu banyak baris fisik pada file Excel")
                 if any(value not in (None, "") for value in row):
@@ -2884,6 +2882,17 @@ def admin_pegawai_import():
         fee_raw = _import_cell(row, 12)
 
         row_errors = []
+        reg_override = None
+        override_raw = _import_cell(row, 14)
+        if override_raw not in (None, ""):
+            try:
+                if not is_super:
+                    raise ValueError("Hanya Superadmin boleh mengisi batas REG khusus.")
+                normalized = str(int(override_raw)) if isinstance(override_raw, float) and override_raw.is_integer() else _import_str(override_raw)
+                reg_override = read_employee_override({"reg_limit_mode": "inherit" if normalized.upper() == "IKUTI_PT" else "override",
+                                                       "reg_withdrawal_max_override": normalized}, is_superadmin=True)
+            except ValueError as error:
+                row_errors.append(str(error))
 
         if not id_pegawai or not nama or not email:
             row_errors.append("ID Pegawai/Nama/Email wajib diisi")
@@ -2933,7 +2942,7 @@ def admin_pegawai_import():
         seen_emails.add(email_key)
         valid_rows.append((
             id_pegawai, nama, email, jabatan, gaji, status, perusahaan, perusahaan_induk,
-            no_rekening, no_rekening_lain, rekening_ewallet, no_telp, siklus, fee_value, now_str,
+            no_rekening, no_rekening_lain, rekening_ewallet, no_telp, siklus, fee_value, now_str, reg_override,
         ))
 
     if valid_rows:
@@ -2941,10 +2950,11 @@ def admin_pegawai_import():
             INSERT INTO pegawai (
                 id_pegawai, nama, email, jabatan, gaji, status_aktif,
                 perusahaan, perusahaan_induk, no_rekening, no_rekening_lain,
-                rekening_ewallet, no_telp, siklus_gaji, admin_fee_flat, created_at
+                rekening_ewallet, no_telp, siklus_gaji, admin_fee_flat, created_at, reg_withdrawal_max_override
             )
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, valid_rows)
+        record_policy_event(db, None, "employee_import", {}, {"count": len(valid_rows)})
         db.commit()
 
     total = len(valid_rows) + len(errors)
@@ -2965,6 +2975,7 @@ def admin_pegawai_import():
 
 
 @bp.route("/admin/pegawai/<int:pid>/update", methods=["POST"], endpoint="admin_pegawai_update")
+@serialized_policy_write
 def admin_pegawai_update(pid):
     if not session.get("is_superadmin"):
         ret = require_admin()
@@ -2990,7 +3001,7 @@ def admin_pegawai_update(pid):
         )
     except ValueError as error:
         flash(str(error), "error")
-        return redirect(url_for("web.admin_pegawai"))
+        return employee_form_error(pid=pid)
 
     no_rekening = (request.form.get("no_rekening") or "").strip()
     no_rekening_lain = (request.form.get("no_rekening_lain") or "").strip()
@@ -2998,7 +3009,7 @@ def admin_pegawai_update(pid):
     no_telp    = (request.form.get("no_telp") or "").strip()
     gaji       = parse_int(request.form.get("gaji"), 0)
     status     = 1 if request.form.get("status") == "1" else 0
-    siklus     = normalize_siklus(request.form.get("siklus_gaji"), default="A")
+    siklus     = normalize_siklus(request.form.get("siklus_gaji", existing["siklus_gaji"]), default="A")
 
     current_data = db.execute("SELECT admin_fee_flat FROM pegawai WHERE id=?", (pid,)).fetchone()
     current_fee = current_data["admin_fee_flat"] if current_data and current_data["admin_fee_flat"] is not None else 15000
@@ -3009,23 +3020,23 @@ def admin_pegawai_update(pid):
         if admin_fee_flat is None:
             if (raw_fee or "").strip():
                 flash(f"Admin fee tidak valid (angka 0 - {rupiah_format(ADMIN_FEE_FLAT_MAX)}).", "error")
-                return redirect(url_for("web.admin_pegawai"))
+                return employee_form_error(pid=pid)
             admin_fee_flat = current_fee
     else:
         admin_fee_flat = current_fee
 
     if not nama or not valid_email(email) or not 0 <= gaji <= 2_147_483_647:
         flash("Nama/email wajib valid dan gaji harus berada antara 0 sampai 2.147.483.647.", "error")
-        return redirect(url_for("web.admin_pegawai"))
+        return employee_form_error(pid=pid)
     if not id_pegawai:
         flash("ID pegawai wajib diisi.", "error")
-        return redirect(url_for("web.admin_pegawai"))
+        return employee_form_error(pid=pid)
     if not employee_id_is_valid(id_pegawai):
         flash(f"ID pegawai maksimal {EMPLOYEE_ID_MAX_LEN} karakter alfanumerik.", "error")
-        return redirect(url_for("web.admin_pegawai"))
+        return employee_form_error(pid=pid)
     if not ewallet_is_valid(rekening_ewallet):
         flash("Rekening e-wallet hanya boleh berisi huruf, angka, dan spasi.", "error")
-        return redirect(url_for("web.admin_pegawai"))
+        return employee_form_error(pid=pid)
 
     row = db.execute("SELECT email FROM pegawai WHERE id=?", (pid,)).fetchone()
     old_email = (row["email"] or "").strip().lower() if row else ""
@@ -3047,9 +3058,16 @@ def admin_pegawai_update(pid):
     if exists:
         # 4. Pesan flash-nya disesuaikan (kata 'nama' dibuang biar ga bingung)
         flash("ID pegawai atau email sudah terdaftar.", "error")
-        return redirect(url_for("web.admin_pegawai"))
+        return employee_form_error(pid=pid)
 
     # 🚀 JALANKAN UPDATE MASTER PEGAWAI BESERTA KOLOM perusahaan_induk
+    try:
+        reg_override = read_employee_override(request.form, existing, bool(session.get("is_superadmin")))
+    except ValueError as error:
+        return employee_form_error(str(error), pid)
+    db.execute("UPDATE pegawai SET reg_withdrawal_max_override=? WHERE id=?", (reg_override, pid))
+    record_policy_event(db, None, "employee_limit", {"employee_id": pid, "override": existing["reg_withdrawal_max_override"]},
+                        {"employee_id": pid, "override": reg_override})
     db.execute("""UPDATE pegawai
                   SET id_pegawai=?, nama=?, email=?, jabatan=?, gaji=?, status_aktif=?, perusahaan=?, perusahaan_induk=?, no_rekening=?, no_rekening_lain=?, rekening_ewallet=?, no_telp=?, siklus_gaji=?, admin_fee_flat=?
                   WHERE id=?""",
@@ -3291,6 +3309,14 @@ def superadmin_dashboard():
         ORDER BY company
     """).fetchall()
     companies = [row["company"] for row in company_rows if row["company"]]
+    company_selected = canonical_filter(company_selected, companies)
+    scope_params = [name_key(company_selected)] if company_selected else []
+    employee_scope = "LOWER(TRIM(p.perusahaan_induk)) = ?" if company_selected else "1=1"
+    account_scope = (f"EXISTS (SELECT 1 FROM pegawai p WHERE p.id=a.pegawai_id AND {employee_scope})"
+                     if company_selected else "1=1")
+    transaction_scope = (f"EXISTS (SELECT 1 FROM users u JOIN pegawai p ON "
+                         f"LOWER(TRIM(p.email))=LOWER(TRIM(u.email)) "
+                         f"WHERE u.id=t.user_id AND {employee_scope})" if company_selected else "1=1")
     today = business_today()
 
     admin_email = session.get("admin_email", "").lower() or session.get("email", "").lower()
@@ -3345,7 +3371,8 @@ def superadmin_dashboard():
 
     trend_start = add_months(date(today.year, today.month, 1), -5)
     trend_start_key = trend_start.strftime("%Y-%m")
-    cache_key = f"admin_kpi:v3:{s_first}:{s_next}:{periode_key}:{trend_start_key}"
+    policy_epoch = db.execute("SELECT value FROM app_settings WHERE `key`='company_policy_mutex'").fetchone()["value"]
+    cache_key = f"admin_kpi:{policy_epoch}:v4:{name_key(company_selected)}:{s_first}:{s_next}:{periode_key}:{trend_start_key}"
     cached_kpi = get_cache(cache_key)
     if cached_kpi:
         (
@@ -3374,33 +3401,33 @@ def superadmin_dashboard():
         ) = cached_kpi
     else:
         # --- KPI dasar
-        row = db.execute("SELECT COUNT(*) FROM pegawai").fetchone()
+        row = db.execute(f"SELECT COUNT(*) FROM pegawai p WHERE {employee_scope}", scope_params).fetchone()
         total_pegawai  = row["COUNT(*)"] if row else 0
-        row = db.execute("SELECT COUNT(*) FROM user_accounts").fetchone()
+        row = db.execute(f"SELECT COUNT(*) FROM user_accounts a WHERE {account_scope}", scope_params).fetchone()
         total_register = row["COUNT(*)"] if row else 0
-        row = db.execute("SELECT COUNT(*) FROM user_accounts WHERE status_aktif=1").fetchone()
+        row = db.execute(f"SELECT COUNT(*) FROM user_accounts a WHERE status_aktif=1 AND {account_scope}", scope_params).fetchone()
         reg_aktif      = row["COUNT(*)"] if row else 0
-        row = db.execute("SELECT COUNT(*) FROM pegawai WHERE status_aktif=1").fetchone()
+        row = db.execute(f"SELECT COUNT(*) FROM pegawai p WHERE status_aktif=1 AND {employee_scope}", scope_params).fetchone()
         eligible       = row["COUNT(*)"] if row else 0
 
         # --- KPI transaksi untuk bulan kalender berjalan (berdasar TANGGAL, bukan periode)
-        row = db.execute("""
-            SELECT COUNT(*) FROM transactions
-            WHERE tanggal >= ? AND tanggal < ?
-        """, (s_first, s_next)).fetchone()
+        row = db.execute(f"""
+            SELECT COUNT(*) FROM transactions t
+            WHERE {transaction_scope} AND tanggal >= ? AND tanggal < ?
+        """, scope_params + [s_first, s_next]).fetchone()
         trx_count = row["COUNT(*)"] if row else 0
 
-        row = db.execute("""
-            SELECT COALESCE(SUM(nominal),0) FROM transactions
-            WHERE status='sukses' AND tanggal >= ? AND tanggal < ?
-        """, (s_first, s_next)).fetchone()
+        row = db.execute(f"""
+            SELECT COALESCE(SUM(nominal),0) FROM transactions t
+            WHERE {transaction_scope} AND status='sukses' AND tanggal >= ? AND tanggal < ?
+        """, scope_params + [s_first, s_next]).fetchone()
         trx_sum = row["COALESCE(SUM(nominal),0)"] if row else 0
 
         # Borrowers unik bulan ini (sukses atau on-proses)
-        row = db.execute("""
-            SELECT COUNT(DISTINCT user_id) FROM transactions
-            WHERE tanggal >= ? AND tanggal < ? AND status IN ('sukses','on-proses')
-        """, (s_first, s_next)).fetchone()
+        row = db.execute(f"""
+            SELECT COUNT(DISTINCT user_id) FROM transactions t
+            WHERE {transaction_scope} AND tanggal >= ? AND tanggal < ? AND status IN ('sukses','on-proses')
+        """, scope_params + [s_first, s_next]).fetchone()
         unique_borrowers = row["COUNT(DISTINCT user_id)"] if row else 0
 
         # Pegawai yg BELUM mencairkan (pakai jumlah akun register aktif sebagai basis)
@@ -3408,16 +3435,16 @@ def superadmin_dashboard():
 
         # --- total admin fee periode ini, mengikuti riwayat:
         #     hanya transaksi sukses di rentang tanggal bulan simulasi ---
-        row_fee = db.execute("""
+        row_fee = db.execute(f"""
             SELECT
               COALESCE(SUM(CASE WHEN COALESCE(product, 'reg')='reg' THEN admin_fee END), 0) AS fee_reg,
               COALESCE(SUM(CASE WHEN product='urg' THEN admin_fee END), 0) AS fee_urg,
               COALESCE(SUM(admin_fee), 0) AS fee_total
-            FROM transactions
-            WHERE tanggal >= ?
+            FROM transactions t
+            WHERE {transaction_scope} AND tanggal >= ?
               AND tanggal < ?
               AND status = 'sukses'
-        """, (s_first, s_next)).fetchone()
+        """, scope_params + [s_first, s_next]).fetchone()
 
         admin_fee_reg_total  = int(row_fee["fee_reg"] or 0)
         admin_fee_urg_total  = int(row_fee["fee_urg"] or 0)
@@ -3425,52 +3452,37 @@ def superadmin_dashboard():
     
         # Jumlah on-proses yang sedang menunggu (tampilkan SEMUA yang masih hidup - tak dibatasi periode,
         # supaya admin selalu melihat antrian real-time lintas siklus)
-        row = db.execute("""
-            SELECT COUNT(*) FROM transactions WHERE status='on-proses'
-        """).fetchone()
+        row = db.execute(f"""
+            SELECT COUNT(*) FROM transactions t WHERE {transaction_scope} AND status='on-proses'
+        """, scope_params).fetchone()
         pending_count = row["COUNT(*)"] if row else 0
 
         # KPI siklus + tidak aktif
+        cycle_a, cycle_b, cycle_c, cycle_d = monthly_cycle_counts(db, employee_scope, scope_params)
         row = db.execute(
-            "SELECT COUNT(*) FROM pegawai WHERE status_aktif=1 AND COALESCE(siklus_gaji,'A')='A'"
-        ).fetchone()
-        cycle_a = row["COUNT(*)"] if row else 0
-        row = db.execute(
-            "SELECT COUNT(*) FROM pegawai WHERE status_aktif=1 AND COALESCE(siklus_gaji,'A')='B'"
-        ).fetchone()
-        cycle_b = row["COUNT(*)"] if row else 0
-        row = db.execute(
-            "SELECT COUNT(*) FROM pegawai WHERE status_aktif=1 AND COALESCE(siklus_gaji,'A')='C'"
-        ).fetchone()
-        cycle_c = row["COUNT(*)"] if row else 0
-        row = db.execute(
-            "SELECT COUNT(*) FROM pegawai WHERE status_aktif=1 AND COALESCE(siklus_gaji,'A')='D'"
-        ).fetchone()
-        cycle_d = row["COUNT(*)"] if row else 0
-        row = db.execute(
-            "SELECT COUNT(*) FROM pegawai WHERE status_aktif=0"
+            f"SELECT COUNT(*) FROM pegawai p WHERE status_aktif=0 AND {employee_scope}", scope_params
         ).fetchone()
         inactive_count = row["COUNT(*)"] if row else 0
 
         # --- Data grafik (total sukses per hari di bulan kalender)
-        chart_data = db.execute("""
+        chart_data = db.execute(f"""
             SELECT substr(tanggal, 9, 2) AS hari, SUM(nominal) AS total
-            FROM transactions
-            WHERE status='sukses' AND tanggal >= ? AND tanggal < ?
+            FROM transactions t
+            WHERE {transaction_scope} AND status='sukses' AND tanggal >= ? AND tanggal < ?
             GROUP BY hari ORDER BY hari
-        """, (s_first, s_next)).fetchall()
+        """, scope_params + [s_first, s_next]).fetchall()
         chart_labels = [r["hari"] for r in chart_data]
         chart_values = [r["total"] for r in chart_data]
 
         # --- Trend 6 bulan terakhir (berdasar periode)
         trend_months = [add_months(trend_start, i).strftime("%Y-%m") for i in range(6)]
         trend_map = {m: 0 for m in trend_months}
-        trend_rows = db.execute("""
+        trend_rows = db.execute(f"""
             SELECT periode, COALESCE(SUM(nominal),0) AS total
-            FROM transactions
-            WHERE status='sukses' AND periode >= ?
+            FROM transactions t
+            WHERE {transaction_scope} AND status='sukses' AND periode >= ?
             GROUP BY periode
-        """, (trend_start_key,)).fetchall()
+        """, scope_params + [trend_start_key]).fetchall()
         for r in trend_rows:
             if r["periode"] in trend_map:
                 trend_map[r["periode"]] = int(r["total"] or 0)
@@ -3479,11 +3491,11 @@ def superadmin_dashboard():
 
         # --- Cohort sederhana: bulan pertama transaksi vs repeat bulan+1
         cohort_rows = []
-        cohort_activity = db.execute("""
+        cohort_activity = db.execute(f"""
             SELECT user_id, periode
-            FROM transactions
-            WHERE status IN ('sukses','on-proses') AND periode >= ?
-        """, (trend_start_key,)).fetchall()
+            FROM transactions t
+            WHERE {transaction_scope} AND status IN ('sukses','on-proses') AND periode >= ?
+        """, scope_params + [trend_start_key]).fetchall()
         first_period = {}
         activity_set = set()
         for r in cohort_activity:
@@ -3536,15 +3548,15 @@ def superadmin_dashboard():
         )
 
     fee_start, fee_end = month_filter_bounds(date.fromisoformat(admin_fee_month + "-01"))
-    fee_recap_where = "WHERE status = 'sukses' AND tanggal >= ? AND tanggal <= ?"
-    fee_recap_params = [fee_start.isoformat(), fee_end.isoformat()]
+    fee_recap_where = f"WHERE {transaction_scope} AND status = 'sukses' AND tanggal >= ? AND tanggal <= ?"
+    fee_recap_params = scope_params + [fee_start.isoformat(), fee_end.isoformat()]
 
     admin_fee_recap_rows = db.execute(f"""
         SELECT
           COALESCE(product, 'reg') AS product,
           COUNT(*) AS trx_count,
           COALESCE(SUM(admin_fee), 0) AS admin_fee_total
-        FROM transactions
+        FROM transactions t
         {fee_recap_where}
         GROUP BY COALESCE(product, 'reg')
         ORDER BY CASE COALESCE(product, 'reg')
@@ -3663,7 +3675,7 @@ def superadmin_dashboard():
 
     dashboard_template = "superadmin_dashboard.html" if session.get("is_superadmin") else "admin_dashboard.html"
 
-    weekly_cutoff_counts = get_weekly_cutoff_counts(db)
+    weekly_cutoff_counts = get_weekly_cutoff_counts(db, employee_scope, scope_params)
     return render_template(
         dashboard_template,
         mk=mk,
@@ -3738,26 +3750,13 @@ def superadmin_settings():
             "ppn_enabled": get_ppn_enabled(),
             "is_superadmin": bool(session.get("is_superadmin")),
             "env_account": env_account,
-            "runtime_force_limit": get_runtime_force_limit(),
         }
 
     if request.method == "POST":
         form_type = request.form.get("form_type") or "password"
-        if form_type == "ppn":
-            enabled = request.form.get("ppn_enabled") == "1"
-            set_ppn_enabled(enabled)
-            flash("Pengaturan PPN diperbarui.", "success")
-            return redirect(url_for("web.superadmin_settings"))
-
-        if form_type == "runtime_force_limit":
-            if not session.get("is_superadmin"):
-                return ("", 404)
-            if request.form.get("force_confirmed") != "1":
-                return redirect(url_for("web.superadmin_settings"))
-            enabled = request.form.get("runtime_force_limit") == "1"
-            set_runtime_force_limit(enabled)
-            flash("Pengaturan tersimpan.", "success")
-            return redirect(url_for("web.superadmin_settings"))
+        if form_type in {"ppn", "runtime_force_limit", "products"}:
+            flash("Pengaturan global hanya melalui Pengaturan Sistem. Force time limit sudah dipensiunkan.", "info")
+            return redirect(url_for("web.superadmin_system_settings"), code=303)
 
         old_pw = request.form.get("old_password") or ""
         new_pw = request.form.get("new_password") or ""
@@ -3798,7 +3797,7 @@ from werkzeug.security import generate_password_hash
 
 # --- A. TAMPILAN UTAMA KELOLA ADMIN + FITUR FILTER SAKTI ---
 @bp.route("/superadmin/admins", methods=["GET"])
-def superadmin_admins():
+def superadmin_admins(form_restore=None):
     if not session.get("is_superadmin"):
         flash("Akses ditolak! Menu ini hanya untuk Superadmin.", "danger")
         return redirect(url_for("web.login"))
@@ -3810,11 +3809,7 @@ def superadmin_admins():
     f_company = (request.args.get("company") or "").strip()
     
     # Base query admin
-    query = """SELECT id, name, email, company, no_telp, status_aktif, hak_approval,
-                      COALESCE(cutoff_mingguan_aktif, 0) AS cutoff_mingguan_aktif,
-                      COALESCE(cutoff_hari, 2) AS cutoff_hari,
-                      COALESCE(produk_reg_aktif, 1) AS produk_reg_aktif,
-                      COALESCE(produk_urg_aktif, 1) AS produk_urg_aktif
+    query = """SELECT id, name, email, company, no_telp, status_aktif, hak_approval
                FROM admins WHERE 1=1"""
     params = []
     
@@ -3826,8 +3821,8 @@ def superadmin_admins():
         
     # 3. Jika user memilih filter 'Perusahaan' tertentu
     if f_company:
-        query += " AND company = ?"
-        params.append(f_company)
+        query += " AND LOWER(TRIM(company)) = ?"
+        params.append(name_key(f_company))
         
     # Urutkan dari yang terbaru
     query += " ORDER BY id DESC"
@@ -3837,19 +3832,27 @@ def superadmin_admins():
     
     # 4. Ambil daftar perusahaan UNIK untuk dipasang di dropdown select HTML
     companies = [client["name"] for client in list_clients(db)]
+    f_company = canonical_filter(f_company, companies)
     
     # Hitung total hasil filter
     total = len(rows)
     
     # 5. Oper semua variabel ke template HTML
     return render_template(
-        "superadmin_admins.html", 
+        "superadmin_admins.html",
+        form_restore=form_restore,
         rows=rows, 
         q=q, 
         f_company=f_company, 
         companies=companies, 
         total=total
     )
+
+def admin_form_error(admin_id=None):
+    values = {key: value for key, value in request.form.items() if key not in {"password", "csrf_token"}}
+    restore = {"dialog": "admin-edit" if admin_id else "admin-add", "values": values,
+               "action": url_for("web.superadmin_edit_admin", admin_id=admin_id) if admin_id else url_for("web.superadmin_admins_add")}
+    return superadmin_admins(form_restore=restore), 422
 
 # --- B. EDIT ADMIN & COMPANY ---
 @bp.route("/superadmin/admins/edit/<int:admin_id>", methods=["POST"])
@@ -3864,7 +3867,7 @@ def superadmin_edit_admin(admin_id):
     no_telp = (request.form.get("no_telp") or "").strip()
     if not name or not valid_email(email):
         flash("Nama dan email admin wajib valid.", "error")
-        return redirect(url_for("web.superadmin_admins"))
+        return admin_form_error(admin_id)
     db = get_db()
     existing_admin = db.execute("SELECT company FROM admins WHERE id=?", (admin_id,)).fetchone()
     if not existing_admin:
@@ -3872,7 +3875,7 @@ def superadmin_edit_admin(admin_id):
     registered_client = client_by_name(db, company)
     if (company and not registered_client) or (not company and existing_admin["company"]):
         flash("Pilih perusahaan yang sudah terdaftar di Kelola Client.", "error")
-        return redirect(url_for("web.superadmin_admins"))
+        return admin_form_error(admin_id)
     if registered_client:
         company = registered_client["name"]
     
@@ -3880,22 +3883,11 @@ def superadmin_edit_admin(admin_id):
     status_aktif = 1 if request.form.get("status", "1") == "1" else 0
     # Hak approve/tolak tarik gaji (LAYER 1) - checkbox, tidak terkirim sama sekali kalau tidak dicentang
     hak_approval = 1 if request.form.get("hak_approval") in ("1", "on", "true") else 0
-    cutoff_aktif = 1 if request.form.get("cutoff_mingguan_aktif") in ("1", "on", "true") else 0
-    produk_reg_aktif = 1 if request.form.get("produk_reg_aktif") in ("1", "on", "true") else 0
-    produk_urg_aktif = 1 if request.form.get("produk_urg_aktif") in ("1", "on", "true") else 0
-    try:
-        cutoff_hari = int(request.form.get("cutoff_hari", 2))
-    except (TypeError, ValueError):
-        cutoff_hari = 2
-    if cutoff_hari not in range(7):
-        flash("Hari cutoff tidak valid.", "danger")
-        return redirect(url_for("web.superadmin_admins"))
-    
     db = get_db()
     coverage_error = admin_coverage_error(db, admin_id, company, status_aktif, hak_approval)
     if coverage_error:
         flash(coverage_error, "error")
-        return redirect(url_for("web.superadmin_admins"))
+        return admin_form_error(admin_id)
 
     # PT Windu Karya wajib selalu ada admin (lihat superadmin_final_gate) - kalau ini admin Windu Karya
     # SATU-SATUNYA yang hak_approval-nya masih menyala dan mau dimatikan, beri peringatan (tetap boleh
@@ -3917,19 +3909,9 @@ def superadmin_edit_admin(admin_id):
     try:
         # 💡 Tambahkan status_aktif=? ke dalam query UPDATE
         db.execute(
-            "UPDATE admins SET name=?, email=?, company=?, no_telp=?, status_aktif=?, hak_approval=?, cutoff_mingguan_aktif=?, cutoff_hari=?, produk_reg_aktif=?, produk_urg_aktif=? WHERE id=?",
-            (name, email, company, no_telp, status_aktif, hak_approval, cutoff_aktif, cutoff_hari, produk_reg_aktif, produk_urg_aktif, admin_id)
+            "UPDATE admins SET name=?, email=?, company=?, no_telp=?, status_aktif=?, hak_approval=? WHERE id=?",
+            (name, email, company, no_telp, status_aktif, hak_approval, admin_id)
         )
-        # Satu company memiliki satu konfigurasi cutoff bersama.
-        db.execute("""
-            UPDATE admins
-            SET cutoff_mingguan_aktif=?, cutoff_hari=?
-            WHERE LOWER(TRIM(company)) = LOWER(TRIM(?))
-        """, (cutoff_aktif, cutoff_hari, company))
-        db.execute("""
-            UPDATE admins SET produk_reg_aktif=?, produk_urg_aktif=?
-            WHERE LOWER(TRIM(company)) = LOWER(TRIM(?))
-        """, (produk_reg_aktif, produk_urg_aktif, company))
         db.commit()
         flash("Data admin berhasil diperbarui!", "success")
         if windu_warning:
@@ -3938,6 +3920,7 @@ def superadmin_edit_admin(admin_id):
         db.rollback()
         current_app.logger.exception("Gagal mengupdate admin id=%s", admin_id)
         flash("Gagal mengupdate admin. Cek log server untuk detail.", "danger")
+        return admin_form_error(admin_id)
         
     return redirect(url_for("web.superadmin_admins"))
 
@@ -3980,49 +3963,16 @@ def superadmin_admins_add():
     registered_client = client_by_name(db, company)
     if not registered_client:
         flash("Pilih perusahaan yang sudah terdaftar di Kelola Client.", "error")
-        return redirect(url_for("web.superadmin_admins"))
+        return admin_form_error()
     if registered_client:
         company = registered_client["name"]
     status_aktif = 1 if request.form.get("status", "1") == "1" else 0
     # Hak approve/tolak tarik gaji (LAYER 1) - default OFF kalau tidak dicentang, konsisten dgn
     # kebijakan "semua admin default tidak punya hak approval sampai dinyalakan manual Superadmin".
     hak_approval = 1 if request.form.get("hak_approval") in ("1", "on", "true") else 0
-    cutoff_aktif = 1 if request.form.get("cutoff_mingguan_aktif") in ("1", "on", "true") else 0
-    produk_reg_aktif = 1 if request.form.get("produk_reg_aktif") in ("1", "on", "true") else 0
-    produk_urg_aktif = 1 if request.form.get("produk_urg_aktif") in ("1", "on", "true") else 0
-    try:
-        cutoff_hari = int(request.form.get("cutoff_hari", 2))
-    except (TypeError, ValueError):
-        cutoff_hari = 2
-    if cutoff_hari not in range(7):
-        flash("Hari cutoff tidak valid.", "warning")
-        return redirect(url_for("web.superadmin_admins"))
-
-    # Company hanya boleh memiliki satu konfigurasi cutoff. Jika company sudah
-    # memiliki admin, konfigurasi yang sudah ada menjadi sumber kebenaran.
-    existing_cutoff = db.execute("""
-        SELECT cutoff_mingguan_aktif, cutoff_hari
-        FROM admins
-        WHERE LOWER(TRIM(company)) = LOWER(TRIM(?))
-        ORDER BY id ASC LIMIT 1
-    """, (company,)).fetchone()
-    if existing_cutoff:
-        cutoff_aktif = int(existing_cutoff["cutoff_mingguan_aktif"] or 0)
-        cutoff_hari = int(existing_cutoff["cutoff_hari"] if existing_cutoff["cutoff_hari"] is not None else 2)
-    existing_products = db.execute("""
-        SELECT COALESCE(produk_reg_aktif, 1) AS reg_on,
-               COALESCE(produk_urg_aktif, 1) AS urg_on
-        FROM admins
-        WHERE LOWER(TRIM(company)) = LOWER(TRIM(?))
-        ORDER BY id ASC LIMIT 1
-    """, (company,)).fetchone()
-    if existing_products:
-        produk_reg_aktif = int(existing_products["reg_on"] or 0)
-        produk_urg_aktif = int(existing_products["urg_on"] or 0)
-
     if not name or not valid_email(email) or not password_ok(password):
         flash("Semua field wajib diisi!", "warning")
-        return redirect(url_for("web.superadmin_admins"))
+        return admin_form_error()
         
     # Hash password biar aman di database
     pw_hash = generate_password_hash(password)
@@ -4031,10 +3981,10 @@ def superadmin_admins_add():
         # Tambahkan kolom role dan status_aktif ke dalam query INSERT (Sudah fix untuk MariaDB)
         db.execute(
             """
-            INSERT INTO admins (name, email, password_hash, company, no_telp, role, status_aktif, hak_approval, cutoff_mingguan_aktif, cutoff_hari, produk_reg_aktif, produk_urg_aktif, created_at)
-            VALUES (?, ?, ?, ?, ?, 'admin', ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO admins (name, email, password_hash, company, no_telp, role, status_aktif, hak_approval, created_at)
+            VALUES (?, ?, ?, ?, ?, 'admin', ?, ?, ?)
             """,
-            (name, email, pw_hash, company, no_telp, status_aktif, hak_approval, cutoff_aktif, cutoff_hari, produk_reg_aktif, produk_urg_aktif, datetime.now().isoformat(timespec="seconds"))
+            (name, email, pw_hash, company, no_telp, status_aktif, hak_approval, datetime.now().isoformat(timespec="seconds"))
         )
         db.commit()
         flash(f"Admin baru untuk Perusahaan '{company}' berhasil dibuat!", "success")
@@ -4042,6 +3992,7 @@ def superadmin_admins_add():
         db.rollback()
         current_app.logger.exception("Gagal menambah admin")
         flash("Gagal menambah admin. Cek log server untuk detail.", "danger")
+        return admin_form_error()
         
     return redirect(url_for("web.superadmin_admins"))
 
@@ -4069,53 +4020,8 @@ def superadmin_riwayat():
     start_dt, end_dt = history_date_range()
 
     # 4. Bangun Query Utama SQL (start_dt dan end_dt aman digunakan di sini)
-    sql = f"""
-        SELECT t.id, t.tanggal, t.periode, t.nominal, t.admin_fee, t.status, t.product,
-               t.keterangan, t.created_at,
-               u.name AS nama, u.email AS email_user,
-               COALESCE(p.perusahaan_induk, '-') AS company,
-               COALESCE(p.perusahaan, '') AS project,
-               COALESCE(p.id_pegawai,'') AS id_pegawai,
-               COALESCE(p.jabatan,'') AS jabatan,
-               COALESCE(NULLIF(t.rekening_tujuan,''), p.no_rekening, '') AS no_rekening,
-               COALESCE(NULLIF(t.rekening_tujuan_label,''), 'No_Rek Bank') AS rekening_tujuan_label
-        FROM transactions t
-        JOIN users u ON u.id = t.user_id
-        LEFT JOIN pegawai p ON LOWER(TRIM(p.email)) = LOWER(TRIM(u.email))
-        WHERE t.tanggal >= ? AND t.tanggal <= ? AND {where_clause}
-    """
-    params = [start_dt.isoformat(), end_dt.isoformat()] + where_params
-
-    # 5. Pasang dynamic filter tambahan (Dropdown f_company, q pencarian, dll)
-    if f_company:
-        sql += " AND LOWER(TRIM(p.perusahaan_induk)) = ?"
-        params.append(f_company.lower())
-
     f_project = (request.args.get("project") or "").strip()
-    if f_project:
-        sql += " AND LOWER(TRIM(p.perusahaan)) = ?"
-        params.append(f_project.lower())
-
-    if q:
-        sql += """ AND (
-            LOWER(u.name) LIKE ? OR LOWER(u.email) LIKE ?
-            OR LOWER(COALESCE(p.id_pegawai,'')) LIKE ?
-            OR LOWER(COALESCE(p.perusahaan,'')) LIKE ?
-            OR LOWER(COALESCE(p.jabatan,'')) LIKE ?
-            OR LOWER(COALESCE(NULLIF(t.rekening_tujuan,''), p.no_rekening, '')) LIKE ?
-        )"""
-        q_like = f"%{q.lower()}%"
-        params.extend([q_like, q_like, q_like, q_like, q_like, q_like])
-
-    if status:
-        sql += " AND t.status = ?"
-        params.append(status)
-
-    if product:
-        sql += " AND t.product = ?"
-        params.append(product)
-    
-    sql += " ORDER BY t.tanggal DESC, t.id DESC"
+    sql, params = filtered_history_query(db)
 
     # 6. Jalankan Logic List Companies Pilihan Lu
     if is_super:
@@ -4142,12 +4048,11 @@ def superadmin_riwayat():
     # 7. Eksekusi data ke Database
     rows = db.execute(sql, params).fetchall()
 
-    project_sql = "SELECT DISTINCT TRIM(perusahaan) AS project FROM pegawai WHERE perusahaan IS NOT NULL AND TRIM(perusahaan) <> ''"
-    project_params = []
-    if f_company:
-        project_sql += " AND LOWER(TRIM(perusahaan_induk)) = LOWER(TRIM(?))"
-        project_params.append(f_company)
-    projects = sorted({r["project"] for r in db.execute(project_sql, project_params).fetchall() if r["project"]})
+    project_filter_catalog, projects = employee_filter_options(db, f_company if is_super else "")
+    if is_super:
+        companies = [entry["company"] for entry in project_filter_catalog if entry["company"]]
+    f_company = canonical_filter(f_company, companies) if is_super else ((admin_company or "").strip() if f_company else "")
+    f_project = canonical_filter(f_project, projects)
 
     total_nom = sum(int(r["nominal"] or 0) for r in rows if r["status"] == "sukses")
     total_admin = sum(int(r["admin_fee"] or 0) for r in rows if r["status"] == "sukses")
@@ -4169,6 +4074,7 @@ def superadmin_riwayat():
         total_nom=total_nom,
         total_admin=total_admin,
         total_guixu_fee=total_guixu_fee,
+        project_filter_catalog=project_filter_catalog,
         projects=projects,
         f_project=f_project,
     )
@@ -4244,41 +4150,53 @@ def superadmin_reset_all():
     return redirect(url_for("web.superadmin_dashboard"))
 
 
+@bp.route("/superadmin/system-settings", methods=["GET", "POST"])
+@serialized_policy_write
+def superadmin_system_settings():
+    if not session.get("is_superadmin"):
+        abort(403)
+    db = get_db()
+    version = db.execute("SELECT value FROM app_settings WHERE `key`='system_settings_version'").fetchone()["value"]
+    status = 200
+    if request.method == "POST":
+        try:
+            if request.form.get("settings_version") != str(version):
+                status = 409
+                raise ValueError("Pengaturan sudah berubah atau form lama. Muat ulang sebelum menyimpan.")
+            section = request.form.get("section")
+            if section == "products":
+                products = sorted(set(request.form.getlist("products")))
+                if not products or any(product not in {"reg", "urg"} for product in products):
+                    raise ValueError("Pilih minimal satu produk valid.")
+                before = get_enabled_products()
+                save_app_setting("enabled_products", ",".join(products), commit=False)
+                after = products
+            elif section == "ppn":
+                before = get_ppn_enabled()
+                after = request.form.get("ppn_enabled") == "1"
+                save_app_setting("ppn_enabled", "1" if after else "0", commit=False)
+            else:
+                raise ValueError("Bagian pengaturan tidak valid.")
+            save_app_setting("system_settings_version", str(int(version) + 1), commit=False)
+            record_policy_event(db, None, "global_" + section, before, after)
+            db.commit()
+            clear_cache_prefix("")
+            flash("Pengaturan sistem disimpan. Bagian lainnya tidak berubah.", "success")
+            return redirect(url_for("web.superadmin_system_settings"))
+        except ValueError as error:
+            db.rollback()
+            flash(str(error), "error")
+            status = 409 if status == 409 else 422
+    return render_template("superadmin/system_settings.html", settings_version=version,
+                           enabled_products=get_enabled_products(), ppn_enabled=get_ppn_enabled()), status
+
 @bp.post("/admin/products")
-def admin_products():
-    ret = require_superadmin()
-    if ret:
-        return ret
-
-    enabled = request.form.getlist("products")
-    enabled = [p for p in enabled if p in ("reg", "urg")]
-    if not enabled:
-        flash("Minimal satu produk harus aktif.", "error")
-        return redirect(url_for("web.admin_dashboard"))
-
-    ppn_enabled = "1" in request.form.getlist("ppn_enabled")
-    set_enabled_products(enabled)
-    set_ppn_enabled(ppn_enabled)
-    flash("Pengaturan produk diperbarui.", "success")
-    return redirect(url_for("web.admin_dashboard"))
-
 @bp.post("/superadmin/products")
-def superadmin_products():
-    ret = require_superadmin()
-    if ret:
-        return ret
-
-    enabled = request.form.getlist("products")
-    enabled = [p for p in enabled if p in ("reg", "urg")]
-    if not enabled:
-        flash("Minimal satu produk harus aktif.", "error")
-        return redirect(url_for("web.superadmin_dashboard"))
-
-    ppn_enabled = "1" in request.form.getlist("ppn_enabled")
-    set_enabled_products(enabled)
-    set_ppn_enabled(ppn_enabled)
-    flash("Pengaturan produk diperbarui.", "success")
-    return redirect(url_for("web.superadmin_dashboard"))
+def retired_products():
+    if not session.get("is_superadmin"):
+        abort(403)
+    flash("Form produk lama dipensiunkan. Gunakan Pengaturan Sistem; belum ada perubahan disimpan.", "info")
+    return redirect(url_for("web.superadmin_system_settings"), code=303)
 
 @bp.get("/superadmin/export_range")
 def superadmin_export_range():
@@ -4374,10 +4292,9 @@ def superadmin_export_range():
     if siklus.startswith("W") and siklus[1:].isdigit() and int(siklus[1:]) in range(7):
         weekly_siklus = int(siklus[1:])
         sql += """ AND (
-            SELECT COALESCE(a.cutoff_hari, 2) FROM admins a
-            WHERE LOWER(TRIM(a.company)) = LOWER(TRIM(p.perusahaan_induk))
-              AND COALESCE(a.cutoff_mingguan_aktif, 0)=1
-            ORDER BY a.id DESC LIMIT 1
+            SELECT c.cutoff_hari FROM clients c
+            WHERE c.name_key = LOWER(TRIM(p.perusahaan_induk))
+              AND c.cutoff_mingguan_aktif=1 LIMIT 1
         ) = ?"""
         params.append(weekly_siklus)
     elif siklus in VALID_SIKLUS:

@@ -35,6 +35,7 @@
         <span>Hari ke-{{ limits.hari_ke }}</span>
       </div>
     </div>
+    <p>Maksimal sekali pengajuan REG: {{ [limits.saldo, reg_limit.effective]|min|rupiah }} ({{ reg_limit.source|lower }})</p>
     <div class="wallet-bottom">{{ icon('shield') }}<span>Plafon dan saldo mengikuti ketentuan perusahaan.</span>
     </div>
   </section>

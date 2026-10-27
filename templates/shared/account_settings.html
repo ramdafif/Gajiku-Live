@@ -63,49 +63,6 @@
         {% endif %}
       </div>
     </section>
-    {% if superuser %}
-    <section class="card">
-      <div class="card-header">
-        <div>
-          <h2>PPN biaya admin</h2>
-          <p>Pengaturan pajak untuk perhitungan biaya pengajuan.</p>
-        </div>{{ icon('receipt') }}</div>
-      <form method="post" class="card-body" data-confirm="Pengaturan PPN biaya admin akan diperbarui secara global." data-confirm-title="Ubah pengaturan PPN?">{{ csrf() }}<input type="hidden" name="form_type" value="ppn">
-        <label class="switch-row">
-          <span>
-            <strong>Aktifkan PPN 11%</strong>
-            <small>Diterapkan di atas biaya admin dan dibulatkan oleh server.</small>
-          </span>
-          <input type="checkbox" name="ppn_enabled" value="1"{% if ppn_enabled %} checked{% endif %}>
-        </label>
-        <div class="form-inline-end mt-16">
-          <button type="submit" class="button button-primary">Simpan pengaturan</button>
-        </div>
-      </form>
-    </section>
-    <section class="card">
-      <div class="card-header">
-        <div>
-          <h2>Pengaturan operasional</h2>
-          <p>Konfigurasi global yang berdampak pada operasional aplikasi.</p>
-        </div>{{ icon('settings') }}</div>
-      <form method="post" class="card-body" data-confirm="Konfigurasi force time limit akan diubah secara global. Pastikan Anda memahami dampaknya pada layanan." data-confirm-title="Ubah konfigurasi global?">{{ csrf() }}<input type="hidden" name="form_type" value="runtime_force_limit">
-        <input type="hidden" name="force_confirmed" value="1">
-        <label class="switch-row">
-          <span>
-            <strong>Force time limit</strong>
-            <small>Pengaturan global sesuai implementasi backend saat ini.</small>
-          </span>
-          <input type="checkbox" name="runtime_force_limit" value="1"{% if runtime_force_limit %} checked{% endif %}>
-        </label>
-        <div class="notice notice-warning">{{ icon('info') }}<span>Hanya ubah setelah berkoordinasi dengan tim operasional. Konfirmasi akan diminta sebelum penyimpanan.</span>
-        </div>
-        <div class="form-inline-end">
-          <button type="submit" class="button button-secondary">Simpan konfigurasi</button>
-        </div>
-      </form>
-    </section>
-    {% endif %}
     <div class="mini-note">{{ icon('shield') }}<p>Gajiku tidak pernah meminta password melalui pesan pribadi. Data pegawai dan rekening dikelola admin perusahaan.</p>
     </div>
   </div>

@@ -7,6 +7,9 @@ from app.db import get_db
 from app.services.client_service import PROJECT_NAMES, client_by_name, list_clients, list_projects, name_key, project_in_use
 from app.services.client_service import DEFAULT_REG_WITHDRAWAL_MAX, parse_reg_withdrawal_max
 from app.services.company_lifecycle import billing_state, local_now, mou_period
+from app.services.company_policy import (StalePolicy, check_policy_version, serialized_policy_write,
+    guard_cutoff_change, override_employees, record_policy_event)
+from app.utils.cache import clear_cache_prefix
 
 
 bp = Blueprint("clients", __name__)
@@ -89,11 +92,15 @@ def save_client(existing=None):
         existing = client_by_name(db, existing["name"], lock=True)
     if existing and values["name"] != existing["name"]:
         raise ValueError("Nama PT existing dikunci untuk menjaga relasi pegawai dan akun admin.")
-    raw_limit = request.form.get("reg_withdrawal_max")
-    values["reg_withdrawal_max"] = (
+    if existing:
+        check_policy_version(request.form, existing)
+    raw_limit = request.form.get("reg_withdrawal_max") if not existing else None
+    initial_limit = (
         parse_reg_withdrawal_max(raw_limit) if raw_limit is not None
         else existing["reg_withdrawal_max"] if existing else DEFAULT_REG_WITHDRAWAL_MAX
     )
+    if not existing:
+        values["reg_withdrawal_max"] = initial_limit
     values["allow_projects"] = 1 if request.form.get("allow_projects") == "1" else 0
     for field in ("mou_start", "mou_end"):
         raw = request.form.get(field) or ""
@@ -109,6 +116,7 @@ def save_client(existing=None):
             raise ValueError("Project masih dipakai pegawai. Selesaikan pemindahan data secara eksplisit sebelum Disallow Projects.")
     values["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if existing:
+        values["policy_version"] = existing["policy_version"] + 1
         assignment = ",".join(f"{field}=?" for field in values)
         db.execute(f"UPDATE clients SET {assignment} WHERE id=?", (*values.values(), existing["id"]))
         client_id = existing["id"]
@@ -118,13 +126,17 @@ def save_client(existing=None):
         placeholders = ",".join("?" for field in values)
         cursor = db.execute(f"INSERT INTO clients ({columns}) VALUES ({placeholders})", tuple(values.values()))
         client_id = cursor.lastrowid
+    record_policy_event(db, client_id, "profile", existing or {}, values)
     db.commit()
+    clear_cache_prefix("")
     return client_id
 
 
 @bp.route("/superadmin/clients", methods=["GET", "POST"])
+@serialized_policy_write
 def superadmin_clients():
     db = get_db()
+    failed = False
     if request.method == "POST":
         try:
             client_id = save_client()
@@ -136,7 +148,7 @@ def superadmin_clients():
         else:
             flash("Client ditambahkan. Atur MoU, akun admin, dan project sebelum menambah karyawan.", "success")
             return redirect(url_for("clients.superadmin_client_detail", client_id=client_id))
-        return redirect(url_for("clients.superadmin_clients"))
+        failed = True
     query = (request.args.get("q") or "").strip().lower()
     status = request.args.get("mou") or ""
     clients = []
@@ -149,31 +161,70 @@ def superadmin_clients():
         haystack = " ".join([client["name"], client["mou_number"] or "", client["pic_name"] or "", client["email"] or ""] + [admin["email"] for admin in client["admins"]]).lower()
         if (not query or query in haystack) and (not status or status == client["mou_status"]):
             clients.append(client)
-    return render_template("superadmin_clients.html", clients=clients, q=query, mou_filter=status)
+    return render_template("superadmin_clients.html", clients=clients, q=query, mou_filter=status,
+                           form_restore={"dialog": "client-add", "values": request.form.to_dict()} if failed else None), 422 if failed else 200
 
 
 @bp.route("/superadmin/clients/<int:client_id>", methods=["GET", "POST"])
+@serialized_policy_write
 def superadmin_client_detail(client_id):
     client = find_client(client_id)
     db = get_db()
+    failed = False
+    response_status = 200
     if request.method == "POST":
         try:
-            save_client(client)
+            section = request.form.get("section", "profile")
+            if section == "profile":
+                save_client(client)
+            else:
+                check_policy_version(request.form, client)
+                if section == "reg_limit":
+                    values = {"reg_withdrawal_max": parse_reg_withdrawal_max(request.form.get("reg_withdrawal_max"))}
+                elif section == "cutoff":
+                    day = request.form.get("cutoff_hari", "")
+                    if day not in [str(number) for number in range(7)]:
+                        raise ValueError("Hari cutoff tidak valid.")
+                    values = {"cutoff_mingguan_aktif": int(request.form.get("cutoff_mingguan_aktif") == "1"), "cutoff_hari": int(day)}
+                    guard_cutoff_change(db, client["name"], client, values)
+                elif section == "products":
+                    values = {"produk_reg_aktif": int(request.form.get("produk_reg_aktif") == "1"),
+                              "produk_urg_aktif": int(request.form.get("produk_urg_aktif") == "1")}
+                else:
+                    raise ValueError("Bagian konfigurasi tidak dikenal.")
+                assignment = ",".join(f"{field}=?" for field in values)
+                db.execute(f"UPDATE clients SET {assignment},policy_version=policy_version+1 WHERE id=?",
+                           (*values.values(), client_id))
+                record_policy_event(db, client_id, section, {field: client[field] for field in values}, values)
+                db.commit()
+                clear_cache_prefix("")
         except Exception as error:
             db.rollback()
             if not isinstance(error, ValueError) and not duplicate_error(error):
                 raise
             flash(str(error) if isinstance(error, ValueError) else "Nama PT sudah terdaftar.", "error")
+            failed = True
+            response_status = 409 if isinstance(error, StalePolicy) else 422
         else:
-            flash("Detail client diperbarui.", "success")
-        return redirect(url_for("clients.superadmin_client_detail", client_id=client_id))
+            flash("Konfigurasi perusahaan diperbarui.", "success")
+            return redirect(url_for("clients.superadmin_client_detail", client_id=client_id))
+    return client_detail_response(client, response_status=response_status,
+        form_restore={"dialog": "client-edit", "values": request.form.to_dict()} if failed and request.form.get("section", "profile") == "profile" else None,
+        policy_draft=request.form if failed else {})
+
+def client_detail_response(client, form_restore=None, policy_draft=None, response_status=200):
+    db = get_db()
+    client_id = client["id"]
     status, label = mou_status(client)
     return render_template("client_detail.html", client=client, projects=list_projects(db, client_id),
                            admins=client_admins(db, client), mou_label=label, mou_status=status,
-                           is_superadmin=True, billing=billing_state(db, client_id),
+                           overrides=override_employees(db, client["name"]),
+                           form_restore=form_restore,
+                           policy_draft=policy_draft or {},
+                           is_superadmin=bool(session.get("is_superadmin")), billing=billing_state(db, client_id),
                            mou_period_key=mou_period(client),
                            mou_acknowledged=bool(db.execute("SELECT 1 FROM client_mou_actions WHERE client_id=? AND period_key=?",
-                                                          (client_id, mou_period(client))).fetchone()))
+                                                          (client_id, mou_period(client))).fetchone())), response_status
 
 
 def project_change(client, project_id=None, delete=False):
@@ -218,6 +269,9 @@ def project_change(client, project_id=None, delete=False):
         if not isinstance(error, ValueError) and not duplicate_error(error):
             raise
         flash(str(error) if isinstance(error, ValueError) else "Project dengan nama tersebut sudah terdaftar di PT ini.", "error")
+        if not delete:
+            return client_detail_response(client, response_status=422,
+                form_restore={"dialog": "project-edit" if project_id else "project-add", "action": request.path, "values": request.form.to_dict()})
     return redirect(target)
 
 

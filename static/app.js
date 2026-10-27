@@ -164,6 +164,7 @@
         if (companyDisplay)
           companyDisplay.value = values.perusahaan_induk || "";
       }
+      form?.dispatchEvent(new Event("policychange"));
       dialog.showModal();
     });
   });
@@ -215,6 +216,26 @@
     validateRange(form, "mou_start", "mou_end"),
   );
 
+  const projectFilters = parseData("project-filter-catalog");
+  if (Array.isArray(projectFilters)) {
+    selectAll("[data-company-project-filter]").forEach((form) => {
+      const company = select("[data-filter-company]", form);
+      const project = select("[data-filter-project]", form);
+      if (!company || !project) return;
+      company.addEventListener("change", () => {
+        const companyKey = company.value.trim().toLowerCase();
+        const projects = new Map();
+        projectFilters.forEach((entry) => {
+          if (companyKey && entry.company.trim().toLowerCase() !== companyKey) return;
+          entry.projects.forEach((name) => projects.set(name.trim().toLowerCase(), name));
+        });
+        project.replaceChildren(new Option("Semua project", ""));
+        [...projects.values()].sort((left, right) => left.localeCompare(right, "id"))
+          .forEach((name) => project.add(new Option(name, name)));
+      });
+    });
+  }
+
   const catalog = parseData("client-catalog");
   if (Array.isArray(catalog)) {
     selectAll("[data-employee-form]").forEach((form) => {
@@ -242,6 +263,50 @@
             : "Project mengikuti perusahaan dan pengaturan MoU.";
       });
     });
+  }
+
+  selectAll("[data-employee-form]").forEach((form) => {
+    const mode = form.elements.namedItem("reg_limit_mode");
+    const override = form.elements.namedItem("reg_withdrawal_max_override");
+    const company = form.elements.namedItem("perusahaan_induk");
+    const rupiah = (amount) => new Intl.NumberFormat("id-ID", {style: "currency", currency: "IDR", maximumFractionDigits: 0}).format(amount);
+    const updatePolicy = () => {
+      const client = Array.isArray(catalog) ? catalog.find((item) => item.name === company?.value) : null;
+      const cutoff = select("[data-effective-cutoff]", form);
+      if (cutoff) cutoff.textContent = client?.cutoff_mingguan_aktif
+        ? `Efektif mingguan, cutoff ${["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"][client.cutoff_hari]}. Siklus bulanan tetap disimpan sebagai fallback.`
+        : "Efektif bulanan mengikuti siklus gaji karyawan.";
+      if (!mode || !override) return;
+      const special = mode.value === "override";
+      override.disabled = !special;
+      override.required = special;
+      select("[data-reg-override-field]", form).hidden = !special;
+      select("[data-company-reg-limit]", form).textContent = client ? `Batas perusahaan (read-only): ${rupiah(client.reg_withdrawal_max)}` : "Pilih perusahaan untuk melihat batasnya.";
+      select("[data-effective-reg-limit]", form).textContent = special
+        ? `Batas efektif: ${override.value ? rupiah(Number(override.value)) : "isi batas khusus"} - khusus karyawan; saldo REG tetap membatasi.`
+        : `Batas efektif: ${client ? rupiah(client.reg_withdrawal_max) : "-"} - mengikuti perusahaan.`;
+    };
+    company?.addEventListener("change", updatePolicy);
+    mode?.addEventListener("change", updatePolicy);
+    override?.addEventListener("input", updatePolicy);
+    form.addEventListener("policychange", updatePolicy);
+    form.addEventListener("reset", () => setTimeout(updatePolicy, 0));
+    updatePolicy();
+  });
+  const restoreButton = select("[data-restore-form]");
+  if (restoreButton) {
+    const dialog = document.getElementById(restoreButton.dataset.dialog);
+    const messages = selectAll(".flash-error span", document).map((element) => element.textContent.trim());
+    if (dialog && messages.length) {
+      const notice = document.createElement("div");
+      notice.className = "notice notice-warning";
+      notice.setAttribute("role", "alert");
+      notice.tabIndex = -1;
+      notice.textContent = messages.join(" ");
+      select(".dialog-header", dialog)?.after(notice);
+      restoreButton.click();
+      notice.focus();
+    } else restoreButton.click();
   }
 
   let pendingForms = new WeakSet();

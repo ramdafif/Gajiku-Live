@@ -1,5 +1,9 @@
 # Regresi sebelum push ke VPS
 
+Panduan limit/override dan gate MySQL: `.md/PanduanTesting-PerubahanLimitPerusahaan.md`.
+`test_company_policy.py` menguji migrasi/pewarisan/cutoff; `test_company_policy_mysql.py`
+adalah integrasi opt-in pada database MySQL sintetis terpisah, skipped jika belum dikonfigurasi.
+
 Jalankan dari root repository:
 
 ```sh

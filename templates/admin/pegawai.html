@@ -26,7 +26,7 @@
     </div>
     <a href="{{ url_for('web.admin_pegawai_import_template') }}" class="text-link">{{ icon('download') }} Template Excel</a>
   </div>
-  <form method="get" class="filter-bar">
+  <form method="get" class="filter-bar" data-company-project-filter>
     <div class="field field-search">
       <label for="employee-q">Cari pegawai</label>
       <div class="input-wrap has-leading">{{ icon('search') }}<input id="employee-q" type="search" name="q" value="{{ q }}" placeholder="Nama, ID, email, rekening...">
@@ -34,19 +34,21 @@
     </div>
     {% if superuser %}
     <div class="field">
-      <label for="employee-client">Perusahaan induk</label>
-      <select id="employee-client" name="client">
+      <label for="employee-client">Perusahaan</label>
+      <select id="employee-client" name="client" data-filter-company>
         <option value="">Semua perusahaan</option>
-        {% for client in client_catalog %}
-        <option value="{{ client.name }}"{% if selected_client == client.name %} selected{% endif %}>{{ client.name }}</option>
+        {% if selected_client and selected_client not in filter_companies %}<option value="{{ selected_client }}" selected>{{ selected_client }} (tidak ditemukan)</option>{% endif %}
+        {% for company in filter_companies %}
+        <option value="{{ company }}"{% if selected_client == company %} selected{% endif %}>{{ company }}</option>
         {% endfor %}
       </select>
     </div>
     {% endif %}
     <div class="field">
       <label for="employee-company">Project</label>
-      <select id="employee-company" name="company">
+      <select id="employee-company" name="company" data-filter-project>
         <option value="">Semua project</option>
+        {% if f_company and f_company not in companies %}<option value="{{ f_company }}" selected>{{ f_company }} (di luar pilihan perusahaan)</option>{% endif %}
         {% for company in companies %}
         <option value="{{ company }}"{% if company == f_company %} selected{% endif %}>{{ company }}</option>
         {% endfor %}
@@ -87,7 +89,7 @@
           <td>
             <strong class="amount">{{ row.gaji|rupiah }}</strong>
             <small>
-              {% if row.cutoff_mingguan_aktif %}Cutoff {{ ['Senin','Selasa','Rabu','Kamis','Jumat','Sabtu','Minggu'][(row.cutoff_hari or 0)|int] }}{% else %}Siklus {{ row.siklus_gaji or '-' }}{% endif %}
+              {% if row.cutoff_mingguan_aktif %}Cutoff {{ ['Senin','Selasa','Rabu','Kamis','Jumat','Sabtu','Minggu'][(row.cutoff_hari or 0)|int] }} (mingguan) &middot; fallback {{ row.siklus_gaji or '-' }}{% else %}Siklus {{ row.siklus_gaji or '-' }} (bulanan){% endif %}
             </small>
           </td>
           <td>{{ row.no_rekening or '-' }}{% if row.no_rekening_lain %}
@@ -102,11 +104,11 @@
               </span>{{ 'Nonaktif karena tagihan' if row.billing_blocked else 'Aktif' if row.status_aktif == 1 else 'Tidak aktif' }}</span>
           </td>
           {% if superuser %}
-          <td>{{ row.admin_fee_flat|rupiah }}</td>
+          <td>{{ row.admin_fee_flat|rupiah }}<small>REG: {{ row.reg_limit.effective|rupiah }}</small><small>{{ row.reg_limit.source }}</small></td>
           {% endif %}
           <td>
             <div class="row-actions">
-              <button type="button" class="button button-secondary button-small" data-dialog="employee-edit" data-form-action="{{ url_for('web.admin_pegawai_update', pid=row.id) }}" data-form-values='{{ {'perusahaan_induk':row.perusahaan_induk,'perusahaan':row.perusahaan,'id_pegawai':row.id_pegawai,'nama':row.nama,'email':row.email,'no_telp':row.no_telp,'jabatan':row.jabatan,'status':row.status_aktif,'gaji':row.gaji,'siklus_gaji':row.siklus_gaji,'admin_fee_flat':row.admin_fee_flat if superuser else none,'no_rekening':row.no_rekening,'no_rekening_lain':row.no_rekening_lain,'rekening_ewallet':row.rekening_ewallet}|tojson }}'>{{ icon('edit') }} Edit</button>
+              <button type="button" class="button button-secondary button-small" data-dialog="employee-edit" data-form-action="{{ url_for('web.admin_pegawai_update', pid=row.id) }}" data-form-values='{{ {'perusahaan_induk':row.perusahaan_induk,'perusahaan':row.perusahaan,'reg_limit_mode':'override' if row.reg_withdrawal_max_override is not none else 'inherit','reg_withdrawal_max_override':row.reg_withdrawal_max_override,'id_pegawai':row.id_pegawai,'nama':row.nama,'email':row.email,'no_telp':row.no_telp,'jabatan':row.jabatan,'status':row.status_aktif,'gaji':row.gaji,'siklus_gaji':row.siklus_gaji,'admin_fee_flat':row.admin_fee_flat if superuser else none,'no_rekening':row.no_rekening,'no_rekening_lain':row.no_rekening_lain,'rekening_ewallet':row.rekening_ewallet}|tojson }}'>{{ icon('edit') }} Edit</button>
               <form action="{{ url_for('web.admin_pegawai_delete', pid=row.id) }}" method="post" data-confirm="Hapus master pegawai {{ row.nama }} ({{ row.id_pegawai }})? Data terkait dan izin penghapusan akan diperiksa server." data-confirm-title="Hapus data pegawai?">{{ csrf() }}<button class="icon-button text-danger" type="submit" aria-label="Hapus pegawai {{ row.nama }}">{{ icon('trash') }}</button>
               </form>
             </div>

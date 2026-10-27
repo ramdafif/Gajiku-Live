@@ -4,7 +4,7 @@
 {% block breadcrumb %}Riwayat transaksi{% endblock %}
 {% block content %}
 {{ page_heading('TRANSAKSI', 'Riwayat Transaksi', 'Lihat status dan rincian pengajuan berdasarkan periode.') }}
-<div class="metric-grid metric-grid-three">{{ metric('Total nominal', total_nom|rupiah, 'Sesuai hasil filter periode', 'wallet', 'accent-blue') }}{{ metric('Total biaya admin', total_admin|rupiah, 'Biaya pada hasil filter', 'receipt') }}{{ metric('Jumlah pengajuan', rows|length, 'Seluruh status pada periode terpilih', 'history') }}</div>
+<div class="metric-grid metric-grid-three">{{ metric('Nominal transaksi selesai', total_nom|rupiah, 'Hanya status selesai dalam periode terpilih', 'wallet', 'accent-blue') }}{{ metric('Biaya transaksi selesai', total_admin|rupiah, 'Hanya status selesai dalam periode terpilih', 'receipt') }}{{ metric('Jumlah pengajuan', rows|length, 'Seluruh status pada periode terpilih', 'history') }}</div>
 <section class="card">
   <div class="card-header">
     <div>

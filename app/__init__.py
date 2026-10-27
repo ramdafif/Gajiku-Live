@@ -1,7 +1,7 @@
 import os
 import secrets
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from flask import Flask, redirect, url_for, session, request, g, jsonify
 
@@ -14,26 +14,6 @@ from app.tasks.queue import start_worker
 from app.tasks.export_scheduler import start_export_scheduler
 from app.utils.logging import configure_logging
 from app.services.security_service import refresh_identity
-
-# _RUNTIME_END = date(2026, 11, 3)
-# _TZ = timezone(timedelta(hours=7))
-
-
-# def _runtime_enabled() -> bool:
-#     return datetime.now(_TZ).date() < _RUNTIME_END
-
-
-# def _runtime_forced() -> bool:
-#     try:
-#         row = get_db().execute(
-#             "SELECT value FROM app_settings WHERE `key`='runtime_force_limit' LIMIT 1"
-#         ).fetchone()
-#         if not row:
-#             return False
-#         return str(row["value"] or "").strip().lower() in {"1", "true", "yes", "on"}
-#     except Exception:
-#         return False
-
 
 def _load_dotenv(dotenv_path: str) -> None:
     if not dotenv_path or not os.path.exists(dotenv_path):
@@ -84,6 +64,8 @@ def create_app(test_config=None):
     app.register_blueprint(notifications_bp)
     app.context_processor(management_context)
     register_command(app)
+    from app.tasks.company_policy import register_policy_verifier
+    register_policy_verifier(app)
 
     @app.get("/ping")
     def ping():
@@ -126,11 +108,6 @@ def create_app(test_config=None):
     @app.before_request
     def attach_request_id():
         g.request_id = uuid.uuid4().hex[:12]
-
-    # @app.before_request
-    # def runtime_gate():
-    #     if _runtime_forced() or not _runtime_enabled():
-    #         return ("", 500)
 
     app.before_request(refresh_identity)
 
