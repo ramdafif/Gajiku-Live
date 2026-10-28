@@ -136,6 +136,36 @@ def test_management_history_honors_applied_dates_and_reset(period_harness, email
     assert context["end"] == "2026-10-31"
 
 
+@pytest.mark.parametrize(("email", "path"), [("admin@fixture.test", "/admin/riwayat"),
+                                             ("super@fixture.test", "/superadmin/riwayat")])
+@pytest.mark.parametrize("file_format", ["xlsx", "csv"])
+def test_history_export_dropdown_preserves_filters(period_harness, email, path, file_format):
+    period_harness.login(email)
+    filters = {"q": "Employee 1", "company": "Fixture PT One", "project": "Project 1",
+               "product": "reg", "status": "sukses", "start": "2026-10-01", "end": "2026-10-19"}
+    html, _ = period_harness.render(path, filters)
+    dropdown = html.split('<details class="export-dropdown"', 1)[1].split('</details>', 1)[0]
+    assert '<summary class="button button-primary">' in dropdown
+    assert 'Ekspor hasil filter' in dropdown
+    assert '<select' not in dropdown
+    assert 'action="/admin/export_filtered" method="get"' in dropdown
+    for option in ("xlsx", "csv"):
+        assert f'type="submit" name="format" value="{option}"' in dropdown
+    for name, value in filters.items():
+        assert f'type="hidden" name="{name}" value="{value}"' in dropdown
+    assert 'data-dialog="export-dialog">Ekspor kustom</button>' in html
+    response = period_harness.client.get('/admin/export_filtered', query_string={**filters, "format": file_format})
+    assert response.status_code == 200
+    assert f'ekspor_hasil_filter.{file_format}' in response.headers['Content-Disposition']
+    if file_format == "xlsx":
+        workbook = load_workbook(io.BytesIO(response.data))
+        rows = list(workbook.active.values)
+        workbook.close()
+    else:
+        rows = list(csv.reader(io.StringIO(response.data.decode('utf-8-sig'))))
+    assert {int(row[0]) for row in rows[1:]} == {102, 103}
+
+
 @pytest.mark.parametrize("period", [None, "", "invalid", "2026-13", "2026-00", "2026-1", "all"])
 def test_fee_recap_defaults_to_current_month(period_harness, period):
     period_harness.login("super@fixture.test")

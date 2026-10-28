@@ -3,11 +3,17 @@
 {% block title %}Riwayat Transaksi{% endblock %}
 {% block breadcrumb %}Riwayat transaksi{% endblock %}
 {% block content %}
-{% call page_heading('TRANSAKSI', 'Riwayat Transaksi', 'Telusuri pengajuan berdasarkan pegawai, waktu, perusahaan, dan status.') %}<form action="{{ url_for('web.export_filtered_history') }}" method="get" class="row-actions">
-  {% for key,value in [('q',q),('company',f_company),('project',f_project),('product',product),('status',status),('start',start),('end',end)] %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}
-  <label class="sr-only" for="filtered-export-format">Format ekspor hasil filter</label><select name="format" id="filtered-export-format"><option value="xlsx">Excel</option><option value="csv">CSV</option></select>
-  <button type="submit" class="button button-primary">{{ icon('download') }} Ekspor hasil filter</button>
-</form><button type="button" class="button button-secondary" data-dialog="export-dialog">Ekspor kustom</button>{% endcall %}
+{% call page_heading('TRANSAKSI', 'Riwayat Transaksi', 'Telusuri pengajuan berdasarkan pegawai, waktu, perusahaan, dan status.') %}
+<details class="export-dropdown" data-export-dropdown>
+  <summary class="button button-primary">{{ icon('download') }} Ekspor hasil filter {{ icon('chevron', 'export-chevron') }}</summary>
+  <form action="{{ url_for('web.export_filtered_history') }}" method="get" class="export-dropdown-panel" aria-label="Format ekspor hasil filter">
+    {% for key,value in [('q',q),('company',f_company),('project',f_project),('product',product),('status',status),('start',start),('end',end)] %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}
+    <p class="export-dropdown-label">Pilih format unduhan</p>
+    <button type="submit" name="format" value="xlsx" class="export-dropdown-option">Excel <span>.xlsx</span></button>
+    <button type="submit" name="format" value="csv" class="export-dropdown-option">CSV <span>.csv</span></button>
+  </form>
+</details>
+<button type="button" class="button button-secondary" data-dialog="export-dialog">Ekspor kustom</button>{% endcall %}
 <div class="metric-grid metric-grid-three">{{ metric('Nominal transaksi selesai', total_nom|rupiah, 'Hanya status selesai dalam hasil filter', 'wallet', 'accent-blue') }}{{ metric('Biaya transaksi selesai', total_admin|rupiah, 'Hanya status selesai dalam hasil filter', 'receipt') }}{{ metric('Jumlah transaksi', rows|length, 'Sesuai seluruh filter aktif', 'history') }}
 </div>
 <section class="card">

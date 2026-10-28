@@ -19,6 +19,28 @@
     }
   };
 
+  selectAll("[data-export-dropdown]").forEach((dropdown) => {
+    const trigger = select("summary", dropdown);
+    const close = (restoreFocus = false) => {
+      dropdown.open = false;
+      if (restoreFocus) trigger.focus();
+    };
+    document.addEventListener("click", (event) => {
+      if (dropdown.open && !dropdown.contains(event.target)) close();
+    });
+    document.addEventListener("focusin", (event) => {
+      if (dropdown.open && !dropdown.contains(event.target)) close();
+    });
+    dropdown.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape" || !dropdown.open) return;
+      event.preventDefault();
+      close(true);
+    });
+    dropdown.addEventListener("submit", (event) => {
+      if (!event.defaultPrevented) close(true);
+    });
+  });
+
   const now = new Date();
   const dateFormatter = new Intl.DateTimeFormat("id-ID", {
     day: "numeric",
