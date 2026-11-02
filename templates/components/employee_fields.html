@@ -101,11 +101,11 @@
   <h3 class="form-section-title">Rekening tujuan</h3>
   <div class="field">
     <label for="{{ prefix }}-bank">Rekening bank utama</label>
-    <input id="{{ prefix }}-bank" name="no_rekening" maxlength="100" value="{{ (record.no_rekening or '') if record else '' }}" inputmode="numeric">
+    <input id="{{ prefix }}-bank" type="text" name="no_rekening" maxlength="100" value="{{ (record.no_rekening or '') if record else '' }}" inputmode="text" placeholder="Contoh: BRI 001234">
   </div>
   <div class="field">
     <label for="{{ prefix }}-other-bank">Rekening bank lain</label>
-    <input id="{{ prefix }}-other-bank" name="no_rekening_lain" maxlength="100" value="{{ (record.no_rekening_lain or '') if record else '' }}" inputmode="numeric">
+    <input id="{{ prefix }}-other-bank" type="text" name="no_rekening_lain" maxlength="100" value="{{ (record.no_rekening_lain or '') if record else '' }}" inputmode="text" placeholder="Contoh: BCA 005678">
   </div>
   <div class="field field-full">
     <label for="{{ prefix }}-ewallet">Rekening e-wallet</label>
